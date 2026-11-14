@@ -1,7 +1,7 @@
 # My Music — iPhone向け個人音楽プレーヤー
 
 ## 機能
-- iPhoneの「ファイル」アプリからMP3/WAVなどを複数選択して再生
+- iPhoneの「ファイル」アプリからMP3/WAV/M4A、動画（MP4/MOV、音声のみ再生）などを複数選択して再生
 - HTTPSの音声ファイル直リンクを登録・保存（localStorage）
 - 再生・一時停止・曲送り・シーク・音量・シャッフル・全曲/1曲リピート
 - iOSが対応する範囲でロック画面操作（Media Session API）
