@@ -16,7 +16,7 @@
 </section>
 <section class="library"><div class="section-title"><h3>ライブラリ</h3><span id="count">0 曲</span></div><div class="add-actions"><button id="chooseFiles" class="primary-action">＋ ファイルから追加</button><button id="showUrl" class="outline-action">＋ URLから追加</button></div><input id="fileInput" type="file" accept="audio/*,video/mp4,video/quicktime,.mp3,.wav,.m4a,.aac,.ogg,.flac,.mp4,.m4v,.mov" multiple hidden>
 <form id="urlForm" class="url-form" hidden><label for="urlInput">音楽ファイルの直接URL（https://...mp3 など）</label><input id="urlInput" type="url" placeholder="https://example.com/music.mp3" required><input id="nameInput" type="text" placeholder="曲名（省略可）"><button type="submit">ライブラリに登録</button></form>
-<div class="list-head"><span>曲一覧</span><button id="clearLocal" class="text-button">ローカル曲を削除</button></div><ul id="tracks" class="tracks"><li class="empty">曲がありません。ファイルまたはURLから追加してください。</li></ul>
-</section><p class="notice">ローカルファイルはアップロードされません。URL登録曲のみ端末に記憶されます。Safariの再起動後はローカル曲を再選択してください。</p>
+<div class="list-head"><span>曲一覧</span><button id="clearLocal" class="text-button">保存した曲を全削除</button></div><ul id="tracks" class="tracks"><li class="empty">曲がありません。ファイルまたはURLから追加してください。</li></ul>
+</section><p class="notice">追加した曲はこのiPhoneのアプリ内に保存され、次回から選び直す必要はありません（サーバーへはアップロードされません）。</p>
 </main><div id="toast" role="status" aria-live="polite"></div><audio id="audio" preload="metadata"></audio><script src="app.js"></script>
 </body></html>
