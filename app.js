@@ -1,4 +1,5 @@
 'use strict';
+const APP_VERSION = 'v8';
 /* =========================================================
    My Music — iPhone向け個人音楽プレーヤー
    ========================================================= */
@@ -440,7 +441,8 @@ async function persistNew(list) {
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
   let ok = 0, ng = 0;
   for (const t of list) { try { await dbPut({ id: t.id, title: t.title, type: t.file.type || '', name: t.file.name, data: await t.file.arrayBuffer(), thumb: null, artist: null }); ok++; } catch { ng++; } }
-  notify(ng ? `${ok} 曲を保存、${ng} 曲は保存できませんでした（容量不足の可能性）` : `${ok} 曲をアプリに保存しました`);
+  notify(ng ? `${ok} 曲を保存、${ng} 曲は保存できませんでした（容量不足・プライベートブラウズの可能性）` : `${ok} 曲をアプリに保存しました`);
+  showDiag();
 }
 async function loadLocal() {
   try {
@@ -449,7 +451,7 @@ async function loadLocal() {
       const type = r.type || (/\.mp3$/i.test(r.name) ? 'audio/mpeg' : /\.(mp4|m4v)$/i.test(r.name) ? 'video/mp4' : '');
       tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(new Blob([r.data], { type })), kind: 'local', thumb: r.thumb || null, artist: r.artist || null });
     }
-  } catch { notify('保存した曲を読み込めませんでした'); }
+  } catch (e) { notify('保存した曲を読み込めませんでした（' + (e?.name || 'エラー') + '）'); }
 }
 
 /* ---------- 共有リンクの解析 ---------- */
@@ -533,9 +535,26 @@ async function fetchYtInfo(t) {
 }
 
 /* ---------- 起動 ---------- */
+/* ---------- 保存状況の診断 ---------- */
+async function showDiag() {
+  const box = $('diag'); if (!box) return; const lines = [];
+  const standalone = window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+  lines.push(['アプリの版', APP_VERSION]);
+  lines.push(['開き方', standalone ? 'ホーム画面のアプリ' : 'ブラウザ（Safariまたは他アプリ内のブラウザ）']);
+  let ls = 'OK'; try { localStorage.setItem('__t', '1'); localStorage.removeItem('__t'); } catch { ls = '使用不可（プライベートブラウズ・Cookieブロックの可能性）'; }
+  lines.push(['設定の保存', ls]);
+  let n = '—'; try { const recs = await dbTx('readonly', st => st.count()); n = `${recs} 曲`; } catch (e) { n = '使用不可（' + (e?.name || 'エラー') + '）'; }
+  lines.push(['アプリ内に保存した曲', n]);
+  try { if (navigator.storage?.estimate) { const est = await navigator.storage.estimate(); lines.push(['使用容量', `${(est.usage / 1048576).toFixed(1)} MB / 上限 約 ${(est.quota / 1073741824).toFixed(1)} GB`]); } } catch {}
+  try { if (navigator.storage?.persisted) lines.push(['削除からの保護', (await navigator.storage.persisted()) ? '有効' : '無効（空き容量が少ないとiOSが消すことがあります）']); } catch {}
+  box.replaceChildren(...lines.map(([k, v]) => { const r = el('div', 'diag-row'); r.append(el('span', '', k), el('strong', '', v)); return r; }));
+  if (!standalone) box.append(el('p', 'diag-tip', 'ホーム画面のアプリとブラウザでは保存場所が別です。Claudeアプリ内などのブラウザで開くと、閉じたときに保存した曲が消える場合があります。Safariで開いて「共有 → ホーム画面に追加」したアプリから使ってください。'));
+}
+
 async function init() {
   loadRemote(); applySavedOrderAndFolders(); render(); updatePlay();
   await loadLocal(); applySavedOrderAndFolders(); render();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
+  showDiag();
 }
 init();
