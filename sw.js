@@ -1,5 +1,5 @@
 // アプリ本体はネットワーク優先（更新をすぐ反映）。オフライン時のみキャッシュを使う。
-const CACHE = 'my-music-app-v8';
+const CACHE = 'my-music-app-v9';
 const APP = ['./', './index.html', './style.css', './app.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(APP.map(p => new Request(p, { cache: 'reload' })))).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

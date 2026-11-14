@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 /* =========================================================
    My Music — iPhone向け個人音楽プレーヤー
    ========================================================= */
@@ -428,30 +428,60 @@ async function mp4Tag(f) {
   return out;
 }
 
-/* ---------- アプリ内保存（IndexedDB） ---------- */
+/* ---------- アプリ内保存（IndexedDB） ----------
+   曲データは Blob（ファイル）として保存する。iPhoneのSafariでは Blob はディスク上のファイルとして
+   扱われ、読み込み時にメモリへ展開されないため、曲数が多くても起動時に落ちにくい。
+   v7以前は ArrayBuffer で保存していたので、起動時に1曲ずつ Blob 形式へ変換する。 */
 const DB_NAME = 'my-music-db', DB_STORE = 'tracks'; let dbPromise = null;
-function db() { if (!dbPromise) dbPromise = new Promise((res, rej) => { const r = indexedDB.open(DB_NAME, 1); r.onupgradeneeded = () => r.result.createObjectStore(DB_STORE, { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); return dbPromise; }
-async function dbTx(mode, fn) { const d = await db(); return new Promise((res, rej) => { const tx = d.transaction(DB_STORE, mode); const st = tx.objectStore(DB_STORE); let out; const r = fn(st); if (r) r.onsuccess = () => { out = r.result; }; tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error); }); }
+function db() {
+  if (!dbPromise) dbPromise = new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains(DB_STORE)) r.result.createObjectStore(DB_STORE, { keyPath: 'id' }); };
+    r.onsuccess = () => { const d = r.result; d.onversionchange = () => { d.close(); dbPromise = null; }; d.onclose = () => { dbPromise = null; }; res(d); };
+    r.onerror = () => { dbPromise = null; rej(r.error); };
+    r.onblocked = () => { dbPromise = null; rej(new Error('blocked')); };
+  });
+  return dbPromise;
+}
+async function dbTxOnce(mode, fn) { const d = await db(); return new Promise((res, rej) => { const tx = d.transaction(DB_STORE, mode); const st = tx.objectStore(DB_STORE); let out; const r = fn(st); if (r) r.onsuccess = () => { out = r.result; }; tx.oncomplete = () => res(out); tx.onerror = tx.onabort = () => rej(tx.error || new Error('abort')); }); }
+// iOSでは再起動直後などに接続が切れていることがあるため、失敗したら接続し直して1回だけ再試行
+async function dbTx(mode, fn) { try { return await dbTxOnce(mode, fn); } catch (e) { try { (await dbPromise)?.close(); } catch {} dbPromise = null; await new Promise(r => setTimeout(r, 300)); return dbTxOnce(mode, fn); } }
 const dbPut = rec => dbTx('readwrite', st => st.put(rec));
+const dbGet = id => dbTx('readonly', st => st.get(id));
 const dbDelete = id => dbTx('readwrite', st => st.delete(id)).catch(() => {});
 const dbClear = () => dbTx('readwrite', st => st.clear()).catch(() => {});
-const dbAll = () => dbTx('readonly', st => st.getAll());
+const dbKeys = () => dbTx('readonly', st => st.getAllKeys());
 async function dbUpdate(id, patch) { try { await dbTx('readwrite', st => { const g = st.get(id); g.onsuccess = () => { if (g.result) st.put(Object.assign(g.result, patch)); }; return null; }); } catch {} }
+function guessType(r) { return r.type || (/\.mp3$/i.test(r.name || '') ? 'audio/mpeg' : /\.(mp4|m4v)$/i.test(r.name || '') ? 'video/mp4' : /\.m4a$/i.test(r.name || '') ? 'audio/mp4' : /\.wav$/i.test(r.name || '') ? 'audio/wav' : ''); }
 async function persistNew(list) {
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
-  let ok = 0, ng = 0;
-  for (const t of list) { try { await dbPut({ id: t.id, title: t.title, type: t.file.type || '', name: t.file.name, data: await t.file.arrayBuffer(), thumb: null, artist: null }); ok++; } catch { ng++; } }
-  notify(ng ? `${ok} 曲を保存、${ng} 曲は保存できませんでした（容量不足・プライベートブラウズの可能性）` : `${ok} 曲をアプリに保存しました`);
+  let ok = 0, ng = 0, lastErr = '';
+  for (const t of list) {
+    try { await dbPut({ id: t.id, title: t.title, type: t.file.type || '', name: t.file.name, data: new Blob([t.file], { type: t.file.type || guessType({ name: t.file.name }) }), thumb: null, artist: null }); ok++; }
+    catch (e) { ng++; lastErr = e?.name || ''; }
+  }
+  notify(ng ? `${ok} 曲を保存、${ng} 曲は保存できませんでした（${lastErr === 'QuotaExceededError' ? '容量不足' : lastErr || 'エラー'}）` : `${ok} 曲をアプリに保存しました`);
   showDiag();
 }
 async function loadLocal() {
-  try {
-    const recs = await dbAll() || [];
-    for (const r of recs) {
-      const type = r.type || (/\.mp3$/i.test(r.name) ? 'audio/mpeg' : /\.(mp4|m4v)$/i.test(r.name) ? 'video/mp4' : '');
-      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(new Blob([r.data], { type })), kind: 'local', thumb: r.thumb || null, artist: r.artist || null });
-    }
-  } catch (e) { notify('保存した曲を読み込めませんでした（' + (e?.name || 'エラー') + '）'); }
+  let keys;
+  try { keys = await dbKeys() || []; }
+  catch (e) { notify('保存した曲を読み込めませんでした（' + (e?.name || 'エラー') + '）。アプリを開き直してください'); return; }
+  let failed = 0, migrated = 0;
+  for (const key of keys) {   // 1曲ずつ読む（まとめて読むとiPhoneのメモリが足りなくなる）
+    try {
+      let r = await dbGet(key); if (!r) continue;
+      if (!(r.data instanceof Blob)) {   // 旧形式（ArrayBuffer）→ Blob形式に変換して保存し直す
+        const blob = new Blob([r.data], { type: guessType(r) }); r.data = blob;
+        await dbPut(r); migrated++; r = await dbGet(key); if (!r) continue;
+      }
+      if (tracks.some(t => t.id === r.id)) continue;
+      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(r.data), kind: 'local', thumb: r.thumb || null, artist: r.artist || null });
+    } catch { failed++; }
+    if (migrated && migrated % 3 === 0) { applySavedOrderAndFolders(); render(); }
+  }
+  if (failed) notify(`${failed} 曲を読み込めませんでした。アプリを開き直すと読み込める場合があります`);
+  else if (migrated) notify(`${migrated} 曲を新しい保存形式に変換しました`);
 }
 
 /* ---------- 共有リンクの解析 ---------- */
