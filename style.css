@@ -42,3 +42,6 @@
 .sheet-cancel{margin-top:10px;border:0;border-radius:12px;background:#22324a;color:var(--text);font-size:15px;padding:13px;cursor:pointer}
 .list-head{margin:10px 0 6px}
 .sheet[hidden],[hidden]{display:none!important}
+.yt-wrap{width:100%;margin:0 auto 18px}
+.yt-wrap>div,.yt-wrap iframe{width:100%;height:auto;aspect-ratio:16/9;min-height:200px;border:0;border-radius:16px;overflow:hidden;display:block;background:#000}
+.yt-hint{margin:8px 0 0;text-align:center;font-size:11px;color:var(--muted)}
