@@ -1,16 +1,21 @@
 'use strict';
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 /* =========================================================
-   My Music — iPhone向け個人音楽プレーヤー
+   My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
 const $ = id => document.getElementById(id);
-const audio = $('audio');
+const audio = $('audio');   // 音楽モード（バックグラウンド再生向き）
+const video = $('video');   // 動画モード（映像を表示）
+let cur = audio;            // いま使っている再生要素
 
 const STORE = 'my-music-remote-v1';        // Web曲（URL）
 const ORDER_KEY = 'my-music-order-v1';     // 曲順
 const FOLDERS_KEY = 'my-music-folders-v1'; // フォルダ一覧
 const FOLDER_MAP_KEY = 'my-music-folder-map-v1'; // 曲ID → フォルダ名
+const MODE_KEY = 'my-music-mode-v1';           // 音楽モード / 動画モード
 const VIEW_ALL = '__all__', VIEW_NONE = '__none__';
+let mode = localStorage.getItem(MODE_KEY) === 'video' ? 'video' : 'music';
+let typeFilter = 'all', playType = 'all';      // 種類での絞り込み（すべて / 音楽 / 動画）
 
 let tracks = [], folders = [], currentId = null, shuffle = false, repeat = 0, toastTimer;
 let view = VIEW_ALL;      // 一覧で表示中のフォルダ
@@ -23,6 +28,10 @@ function notify(message) { const t = $('toast'); t.textContent = message; t.clas
 function formatTime(sec) { if (!Number.isFinite(sec)) return '0:00'; sec = Math.max(0, Math.floor(sec)); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; }
 function safeTitle(url) { try { return decodeURIComponent(new URL(url).pathname.split('/').pop()) || 'Web audio'; } catch { return 'Web audio'; } }
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function mediaOf(type, name) { return /^video\//.test(type || '') || /\.(mp4|m4v|mov)(\?|#|$)/i.test(name || '') ? 'video' : 'audio'; }
+function fmtSize(n) { if (!n) return ''; return n >= 1073741824 ? (n / 1073741824).toFixed(1) + 'GB' : n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB'; }
+function extOf(t) { const m = (t.name || '').match(/\.([a-z0-9]{2,4})$/i); if (m) return m[1].toLowerCase(); const ty = t.blob?.type || ''; return { 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'video/mp4': 'mp4', 'video/quicktime': 'mov' }[ty] || (t.media === 'video' ? 'mp4' : 'm4a'); }
+function safeFileName(s) { return String(s || 'my-music').replace(/[\\/:*?"<>|\n\r]+/g, ' ').trim().slice(0, 80) || 'my-music'; }
 function readJSON(key, fallback) { try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v ?? fallback; } catch { return fallback; } }
 
 /* ---------- 保存（localStorage） ---------- */
@@ -39,8 +48,8 @@ function loadRemote() {
   const data = readJSON(STORE, []);
   tracks = Array.isArray(data) ? data.filter(t => typeof t.url === 'string' && /^https:\/\//i.test(t.url)).map(t => {
     const base = { id: String(t.id || uid()), title: String(t.title || safeTitle(t.url)), url: t.url, artist: t.artist || null };
-    if (t.kind === 'youtube' && /^[\w-]{11}$/.test(t.ytId || '')) return { ...base, kind: 'youtube', ytId: t.ytId, thumb: ytThumb(t.ytId) };
-    return { ...base, kind: 'remote' };
+    if (t.kind === 'youtube' && /^[\w-]{11}$/.test(t.ytId || '')) return { ...base, kind: 'youtube', ytId: t.ytId, thumb: ytThumb(t.ytId), media: 'video' };
+    return { ...base, kind: 'remote', media: mediaOf('', t.url) };
   }) : [];
 }
 function applySavedOrderAndFolders() {
@@ -53,8 +62,10 @@ function applySavedOrderAndFolders() {
 
 /* ---------- 表示対象の絞り込み ---------- */
 function inView(t, v) { return v === VIEW_ALL ? true : v === VIEW_NONE ? !t.folder : t.folder === v; }
-function queueTracks() { return tracks.filter(t => inView(t, playView)); }
-function visibleTracks() { const q = query.trim().toLowerCase(); return tracks.filter(t => inView(t, view) && (!q || t.title.toLowerCase().includes(q) || (t.folder || '').toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q))); }
+function matchType(t, f) { return f === 'all' || t.media === f; }
+function setQueue() { playView = view; playType = typeFilter; }
+function queueTracks() { return tracks.filter(t => inView(t, playView) && matchType(t, playType)); }
+function visibleTracks() { const q = query.trim().toLowerCase(); return tracks.filter(t => inView(t, view) && matchType(t, typeFilter) && (!q || t.title.toLowerCase().includes(q) || (t.folder || '').toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q))); }
 
 /* ---------- 描画 ---------- */
 function render() { renderFolders(); renderTracks(); }
@@ -76,20 +87,20 @@ function renderFolders() {
 function renderTracks() {
   const list = $('tracks'); list.replaceChildren();
   const vis = visibleTracks();
-  $('count').textContent = view === VIEW_ALL && !query ? `${tracks.length} 曲` : `${vis.length} / ${tracks.length} 曲`;
+  $('count').textContent = view === VIEW_ALL && !query && typeFilter === 'all' ? `${tracks.length} 件` : `${vis.length} / ${tracks.length} 件`;
   if (!vis.length) {
-    list.append(el('li', 'empty', !tracks.length ? '曲がありません。ファイルまたはURLから追加してください。' : query ? '検索に一致する曲がありません。' : folders.includes(view) ? 'このフォルダには曲がありません。曲の「⋯」から移動するか、このフォルダを開いたまま曲を追加してください。' : '曲がありません。'));
+    list.append(el('li', 'empty', !tracks.length ? '曲・動画がありません。ファイルまたはURLから追加してください。' : query ? '検索に一致する曲がありません。' : typeFilter !== 'all' ? (typeFilter === 'video' ? '動画はありません。' : '音楽はありません。') : folders.includes(view) ? 'このフォルダには曲がありません。曲の「⋯」から移動するか、このフォルダを開いたまま曲を追加してください。' : '曲がありません。'));
     return;
   }
   vis.forEach((track, index) => {
     const li = el('li'); li.dataset.id = track.id; if (track.id === currentId) li.classList.add('current');
     const handle = el('span', 'drag-handle', '≡'); handle.setAttribute('aria-hidden', 'true'); handle.addEventListener('pointerdown', e => startDrag(e, li));
-    const btn = el('button', 'track-select'); btn.type = 'button'; btn.addEventListener('click', () => { playView = view; playTrack(track.id); });
+    const btn = el('button', 'track-select'); btn.type = 'button'; btn.addEventListener('click', () => { setQueue(); playTrack(track.id); });
     const icon = el('span', 'track-icon'); const playingNow = track.id === currentId && !engine.paused();
     if (track.thumb) { icon.classList.add('has-thumb'); icon.style.backgroundImage = `url("${track.thumb}")`; if (playingNow) { icon.classList.add('playing'); icon.textContent = '♫'; } }
     else icon.textContent = playingNow ? '♫' : '♪';
     const info = el('span', 'track-info');
-    info.append(el('span', 'track-name', track.title), el('span', 'track-type', [track.folder && view === VIEW_ALL ? '📁 ' + track.folder : '', track.kind === 'local' ? '保存済み' : track.kind === 'youtube' ? '▶ YouTube' : 'Web URL'].filter(Boolean).join(' · ')));
+    info.append(el('span', 'track-name', track.title), el('span', 'track-type', [track.media === 'video' ? '🎬 動画' : '🎵 音楽', track.folder && view === VIEW_ALL ? '📁 ' + track.folder : '', track.kind === 'local' ? '保存済み' : track.kind === 'youtube' ? '▶ YouTube' : 'Web URL', track.kind === 'local' ? fmtSize(track.size) : ''].filter(Boolean).join(' · ')));
     btn.append(icon, info);
     const moves = el('span', 'moves');
     const up = el('button', 'move', '▲'); up.type = 'button'; up.disabled = index === 0; up.setAttribute('aria-label', `${track.title}を上へ`); up.addEventListener('click', () => moveTrack(track.id, -1));
@@ -102,8 +113,8 @@ function renderTracks() {
 
 function setNow(track) {
   $('trackTitle').textContent = track?.title || '曲を選択してください';
-  $('trackSubtitle').textContent = track ? (track.folder || track.artist || (track.kind === 'local' ? 'アプリに保存した曲' : track.kind === 'youtube' ? 'YouTube' : 'Webサーバーから再生')) : 'MP3 / WAV / MP4';
-  $('sourceLabel').textContent = track ? (track.kind === 'local' ? 'LOCAL AUDIO' : track.kind === 'youtube' ? 'YOUTUBE' : 'ONLINE AUDIO') : 'READY TO PLAY';
+  $('trackSubtitle').textContent = track ? (track.folder || track.artist || (track.kind === 'local' ? 'アプリに保存した' + (track.media === 'video' ? '動画' : '曲') : track.kind === 'youtube' ? 'YouTube' : 'Webサーバーから再生')) : 'MP3 / WAV / M4A / MP4 / MOV';
+  $('sourceLabel').textContent = track ? (track.kind === 'youtube' ? 'YOUTUBE' : (track.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (track.media === 'video' ? (cur === video ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO')) : 'READY TO PLAY';
   $('seek').value = '0'; $('currentTime').textContent = '0:00'; $('duration').textContent = '0:00';
   showArt(track); updateMediaMeta(track);
 }
@@ -112,38 +123,45 @@ function updateMediaMeta(track) {
   navigator.mediaSession.metadata = track ? new MediaMetadata({ title: track.title, artist: track.artist || track.folder || 'My Music', album: track.folder || 'My Music', artwork: track.thumb ? [{ src: track.thumb, sizes: track.kind === 'youtube' ? '480x360' : '320x320', type: 'image/jpeg' }] : [] }) : null;
 }
 function showArt(track) {
-  const yt = track?.kind === 'youtube'; $('art').hidden = yt; $('ytWrap').hidden = !yt;
+  const yt = track?.kind === 'youtube', vid = !yt && !!track && cur === video;
+  $('art').hidden = yt || vid; $('ytWrap').hidden = !yt; $('videoWrap').hidden = !vid;
   const art = $('art'); art.replaceChildren();
   if (track?.thumb) { const img = el('img'); img.src = track.thumb; img.alt = ''; art.append(img); art.classList.add('has-thumb'); }
   else { art.append(el('span', '', '♫')); art.classList.remove('has-thumb'); }
 }
 
 /* ---------- 再生 ---------- */
+function wantVideo(t) { return mode === 'video' && !!t && t.kind !== 'youtube' && t.media === 'video'; }
+function clearEl(m) { try { m.pause(); } catch {} if (m.getAttribute('src')) { m.removeAttribute('src'); m.load(); } }
 async function playTrack(trackId) {
   const track = tracks.find(t => t.id === trackId); if (!track) return;
+  if (!navigator.onLine && track.kind !== 'local') { notify('オフラインのため再生できません（端末に保存した曲・動画は再生できます）'); return; }
   if (currentId !== trackId) {
-    currentId = trackId; setNow(track);
-    if (track.kind === 'youtube') { audio.pause(); audio.removeAttribute('src'); audio.load(); ytLoad(track); render(); return; }
-    ytStop(); audio.src = track.url; audio.load();
+    currentId = trackId; handedOff = false;
+    if (track.kind === 'youtube') { clearEl(audio); clearEl(video); cur = audio; setNow(track); ytLoad(track); render(); return; }
+    ytStop(); const target = wantVideo(track) ? video : audio; clearEl(target === audio ? video : audio);
+    cur = target; cur.src = track.url; cur.load(); setNow(track);
   }
   try { await engine.play(); } catch { notify('再生できません。URL・形式・通信状態を確認してください。'); }
   render();
 }
-function stop() { ytStop(); audio.pause(); audio.removeAttribute('src'); audio.load(); currentId = null; setNow(null); updatePlay(); }
+function stop() { ytStop(); clearEl(audio); clearEl(video); cur = audio; currentId = null; setNow(null); updatePlay(); }
 function curTrack() { return tracks.find(t => t.id === currentId) || null; }
 // 音声ファイルとYouTubeの両方を同じ操作で扱うための窓口
 const engine = {
   yt() { return curTrack()?.kind === 'youtube'; },
-  paused() { return this.yt() ? !(ytState === 1 || ytState === 3) : audio.paused; },
-  time() { return this.yt() ? (ytPlayer?.getCurrentTime?.() || 0) : audio.currentTime; },
-  duration() { return this.yt() ? (ytPlayer?.getDuration?.() || NaN) : audio.duration; },
-  seek(s) { if (this.yt()) ytPlayer?.seekTo?.(s, true); else audio.currentTime = s; },
-  play() { if (this.yt()) { ytPlayer?.playVideo?.(); return Promise.resolve(); } return audio.play(); },
-  pause() { if (this.yt()) ytPlayer?.pauseVideo?.(); else audio.pause(); },
-  hasSource() { return this.yt() ? true : !!audio.src; },
+  paused() { return this.yt() ? !(ytState === 1 || ytState === 3) : cur.paused; },
+  time() { return this.yt() ? (ytPlayer?.getCurrentTime?.() || 0) : cur.currentTime; },
+  duration() { return this.yt() ? (ytPlayer?.getDuration?.() || NaN) : cur.duration; },
+  seek(s) { if (this.yt()) ytPlayer?.seekTo?.(s, true); else cur.currentTime = s; },
+  play() { if (this.yt()) { ytPlayer?.playVideo?.(); return Promise.resolve(); } return cur.play(); },
+  pause() { if (this.yt()) ytPlayer?.pauseVideo?.(); else cur.pause(); },
+  hasSource() { return this.yt() ? true : !!cur.getAttribute('src'); },
 };
 function step(direction, ended = false) {
-  let q = queueTracks(); if (!q.length) { playView = VIEW_ALL; q = tracks; } if (!q.length) return;
+  let q = queueTracks(); if (!q.length) { playView = VIEW_ALL; playType = 'all'; q = tracks; }
+  if (!navigator.onLine) q = q.filter(t => t.kind === 'local' || t.id === currentId);   // オフライン時は保存済みだけ
+  if (!q.length) return;
   if (ended && repeat === 2 && currentId) { engine.seek(0); engine.play().catch(() => notify('再生できません')); return; }
   if (shuffle && q.length > 1) { const other = q.filter(t => t.id !== currentId); playTrack(other[Math.floor(Math.random() * other.length)].id); return; }
   const idx = q.findIndex(t => t.id === currentId); const next = idx < 0 ? 0 : idx + direction;
@@ -242,35 +260,46 @@ function autoSort() {
 }
 
 /* ---------- 曲メニュー（シート） ---------- */
+function openSheet(title) { clearTimeout(sheetTimer); const body = $('sheetBody'); body.replaceChildren(); $('sheetTitle').textContent = title; const s = $('sheet'); s.hidden = false; requestAnimationFrame(() => s.classList.add('open')); return body; }
+function sheetItem(body, label, fn, { cls = '', keep = false } = {}) { const b = el('button', 'sheet-item ' + cls, label); b.type = 'button'; b.addEventListener('click', () => { if (!keep) closeSheet(); fn(); }); body.append(b); return b; }
 function openTrackMenu(trackId) {
   const t = tracks.find(x => x.id === trackId); if (!t) return;
-  const sheet = $('sheet'), body = $('sheetBody'); body.replaceChildren();
-  $('sheetTitle').textContent = t.title;
-  const item = (label, fn, cls = '') => { const b = el('button', 'sheet-item ' + cls, label); b.type = 'button'; b.addEventListener('click', () => { closeSheet(); fn(); }); body.append(b); };
+  const body = openSheet(t.title);
+  const item = (label, fn, cls = '') => sheetItem(body, label, fn, { cls });
   body.append(el('div', 'sheet-label', 'フォルダに移動'));
   for (const f of folders) item((t.folder === f ? '✓ ' : '　 ') + '📁 ' + f, () => setFolder(t.id, f), t.folder === f ? 'checked' : '');
   item((t.folder ? '　 ' : '✓ ') + 'フォルダなし（未分類）', () => setFolder(t.id, null), t.folder ? '' : 'checked');
   const guess = guessArtist(t);
   if (guess && !folders.includes(guess)) item(`＋ 「${guess}」フォルダを作って移動`, () => { folders.push(guess); setFolder(t.id, guess); });
   item('＋ 新しいフォルダを作って移動', () => { const f = askFolderName(guess || ''); if (f) setFolder(t.id, f); });
+  body.append(el('div', 'sheet-label', '保存・変換'));
+  if (t.kind === 'local') {
+    item('📁 「ファイル」アプリに保存', () => exportTrack(t));
+    item('🎧 音声を取り出す（MP3・WAV）', () => window.openExtract ? openExtract(t) : notify('読み込み中です。少し待ってからもう一度お試しください'));
+  } else if (t.kind === 'remote') {
+    item('⬇ 端末に保存（オフラインで再生）', () => saveRemoteTrack(t));
+  } else {
+    body.append(el('div', 'sheet-note', 'YouTubeの動画は、規約により保存・音声の取り出しはできません（公式プレーヤーで再生します）'));
+  }
   body.append(el('div', 'sheet-label', 'その他'));
   item('✎ 曲名を変更', () => { const n = (prompt('曲名', t.title) || '').trim(); if (n) { t.title = n; if (t.kind === 'local') dbUpdate(t.id, { title: n }); saveState(); render(); if (t.id === currentId) setNow(t); } });
   item('🗑 この曲を削除', () => { if (confirm(`「${t.title}」を削除しますか？${t.kind === 'local' ? '\n（iPhone本体の元ファイルは消えません）' : ''}`)) removeTrack(t.id); }, 'danger');
-  sheet.hidden = false; requestAnimationFrame(() => sheet.classList.add('open'));
 }
-function closeSheet() { const s = $('sheet'); s.classList.remove('open'); setTimeout(() => { s.hidden = true; }, 200); }
+let sheetTimer = null;
+function closeSheet() { const s = $('sheet'); s.classList.remove('open'); clearTimeout(sheetTimer); sheetTimer = setTimeout(() => { s.hidden = true; }, 200); }
 
 /* ---------- イベント ---------- */
 $('chooseFiles').addEventListener('click', () => $('fileInput').click());
-$('fileInput').addEventListener('change', e => {
-  const files = [...e.target.files]; const target = folders.includes(view) ? view : null; const added = [];
+$('fileInput').addEventListener('change', async e => {
+  const files = [...e.target.files].filter(f => /\.(mp3|wav|m4a|aac|mp4|m4v|mov)$/i.test(f.name) || f.type.startsWith('audio/') || f.type.startsWith('video/'));
+  e.target.value = '';
+  if (!files.length) { notify('追加できるファイルがありませんでした（MP3・WAV・M4A・MP4・MOVに対応）'); return; }
+  if (!(await checkSpace(files.reduce((a, f) => a + f.size, 0)))) return;
+  const target = folders.includes(view) ? view : null; const added = [];
   for (const file of files) {
-    if (!(/\.(mp3|wav|m4a|aac|ogg|flac|mp4|m4v|mov)$/i.test(file.name) || file.type.startsWith('audio/') || file.type.startsWith('video/'))) continue;
-    const t = { id: uid(), title: file.name.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(file), kind: 'local', file, folder: target };
+    const t = { id: uid(), title: file.name.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(file), kind: 'local', file, blob: file, name: file.name, media: mediaOf(file.type, file.name), size: file.size, folder: target };
     tracks.push(t); added.push(t);
   }
-  e.target.value = '';
-  if (!added.length) { notify('追加できる曲がありませんでした'); return; }
   saveState(); render(); persistNew(added).then(() => { metaQueue.push(...added); runMetaQueue(); });
 });
 $('showUrl').addEventListener('click', () => { $('urlForm').hidden = !$('urlForm').hidden; if (!$('urlForm').hidden) $('urlInput').focus(); });
@@ -278,37 +307,47 @@ $('urlForm').addEventListener('submit', e => {
   e.preventDefault(); const url = $('urlInput').value.trim();
   try {
     const info = parseShareUrl(url); const name = $('nameInput').value.trim(); const folder = folders.includes(view) ? view : null;
+    const wantSave = $('saveOffline').checked;
     if (info.kind === 'youtube') {
+      if (wantSave) notify('YouTubeは規約により保存できません。公式プレーヤーで再生する形で登録します');
       if (tracks.some(t => t.kind === 'youtube' && t.ytId === info.ytId) && !confirm('この動画はすでに登録されています。もう一度追加しますか？')) return;
       const t = { id: uid(), title: name || 'YouTube動画', url: info.url, kind: 'youtube', ytId: info.ytId, thumb: ytThumb(info.ytId), folder, artist: null, needsTitle: !name };
       tracks.push(t); saveState(); render(); fetchYtInfo(t);
-      notify('YouTubeの曲を登録しました');
+      if (!wantSave) notify('YouTubeの曲を登録しました');
     } else {
-      tracks.push({ id: uid(), title: name || info.title || safeTitle(info.url), url: info.url, kind: 'remote', folder });
-      saveState(); render(); notify(info.note || 'URLを登録しました');
+      const t = { id: uid(), title: name || info.title || safeTitle(info.url), url: info.url, kind: 'remote', media: mediaOf('', info.url), folder };
+      tracks.push(t); saveState(); render();
+      if (wantSave) saveRemoteTrack(t); else notify(info.note || 'URLを登録しました');
     }
     $('urlForm').reset(); $('urlForm').hidden = true;
   } catch (err) { notify(err?.userMessage || 'URLを読み取れませんでした。共有リンクまたは https:// のURLを貼り付けてください'); }
 });
 $('clearLocal').addEventListener('click', () => {
-  const locals = tracks.filter(t => t.kind === 'local'); if (!locals.length) { notify('保存した曲はありません'); return; }
-  if (!confirm(`アプリに保存した ${locals.length} 曲をすべて削除しますか？（iPhone本体の元ファイルは消えません）`)) return;
+  const locals = tracks.filter(t => t.kind === 'local'); if (!locals.length) { notify('保存した曲・動画はありません'); return; }
+  if (!confirm(`アプリに保存した ${locals.length} 件（約${fmtSize(locals.reduce((a, t) => a + (t.size || 0), 0))}）をすべて削除しますか？（iPhone本体の元ファイルは消えません）`)) return;
   if (currentId && locals.some(t => t.id === currentId)) stop();
   for (const t of locals) URL.revokeObjectURL(t.url); dbClear();
   tracks = tracks.filter(t => t.kind !== 'local'); saveState(); render(); notify('保存した曲を削除しました');
 });
 $('search').addEventListener('input', e => { query = e.target.value; renderTracks(); });
+for (const b of document.querySelectorAll('.type-filter button')) b.addEventListener('click', () => {
+  typeFilter = b.dataset.type; for (const x of document.querySelectorAll('.type-filter button')) x.classList.toggle('active', x === b); renderTracks();
+});
+$('modeMusic').addEventListener('click', () => setMode('music'));
+$('modeVideo').addEventListener('click', () => setMode('video'));
+$('pipBtn').addEventListener('click', togglePiP);
+$('fsBtn').addEventListener('click', () => { try { if (video.webkitEnterFullscreen) video.webkitEnterFullscreen(); else video.requestFullscreen?.(); } catch { notify('全画面にできませんでした'); } });
 $('autoSort').addEventListener('click', autoSort);
 $('renameFolder').addEventListener('click', () => renameFolder(view));
 $('deleteFolder').addEventListener('click', () => deleteFolder(view));
 $('folderLeft').addEventListener('click', () => moveFolder(view, -1));
 $('folderRight').addEventListener('click', () => moveFolder(view, 1));
-$('playFolder').addEventListener('click', () => { const q = tracks.filter(t => inView(t, view)); if (!q.length) { notify('曲がありません'); return; } playView = view; playTrack((shuffle ? q[Math.floor(Math.random() * q.length)] : q[0]).id); });
+$('playFolder').addEventListener('click', () => { const q = tracks.filter(t => inView(t, view) && matchType(t, typeFilter)); if (!q.length) { notify('曲がありません'); return; } setQueue(); playTrack((shuffle ? q[Math.floor(Math.random() * q.length)] : q[0]).id); });
 $('sheet').addEventListener('click', e => { if (e.target.id === 'sheet') closeSheet(); });
 $('sheetCancel').addEventListener('click', closeSheet);
 
 $('play').addEventListener('click', () => {
-  if (!currentId || !engine.hasSource()) { const q = visibleTracks(); if (q.length) { playView = view; playTrack(q[0].id); } else notify('先に曲を追加してください'); return; }
+  if (!currentId || !engine.hasSource()) { const q = visibleTracks(); if (q.length) { setQueue(); playTrack(q[0].id); } else notify('先に曲を追加してください'); return; }
   if (engine.paused()) engine.play().catch(() => notify('再生できません')); else engine.pause();
 });
 $('prev').addEventListener('click', () => { if (engine.time() > 3) engine.seek(0); else step(-1); });
@@ -316,19 +355,31 @@ $('next').addEventListener('click', () => step(1));
 $('shuffle').addEventListener('click', () => { shuffle = !shuffle; $('shuffle').classList.toggle('active', shuffle); $('shuffle').setAttribute('aria-pressed', String(shuffle)); notify(shuffle ? 'シャッフル ON' : 'シャッフル OFF'); });
 $('repeat').addEventListener('click', () => { repeat = (repeat + 1) % 3; $('repeat').classList.toggle('active', repeat !== 0); $('repeat').textContent = repeat === 2 ? '↻₁' : '↻'; $('repeat').setAttribute('aria-label', ['リピートなし', '全曲リピート', '1曲リピート'][repeat]); notify(['リピート OFF', 'リピート ON', '1曲リピート'][repeat]); });
 $('seek').addEventListener('input', () => { const d = engine.duration(); if (Number.isFinite(d) && d > 0) engine.seek((Number($('seek').value) / 1000) * d); });
-$('volume').addEventListener('input', () => { audio.volume = Number($('volume').value); ytPlayer?.setVolume?.(Math.round(audio.volume * 100)); });
-function tick() { const d = engine.duration(), c = engine.time(); $('currentTime').textContent = formatTime(c); if (Number.isFinite(d) && d > 0) { $('seek').value = String(Math.round(c / d * 1000)); $('duration').textContent = formatTime(d); } }
-audio.addEventListener('timeupdate', tick);
-audio.addEventListener('loadedmetadata', () => { $('duration').textContent = formatTime(audio.duration); });
-audio.addEventListener('durationchange', () => { $('duration').textContent = formatTime(audio.duration); });
-audio.addEventListener('play', updatePlay); audio.addEventListener('pause', updatePlay);
-audio.addEventListener('ended', () => step(1, true));
-audio.addEventListener('error', () => { if (currentId && !engine.yt()) notify('この曲を再生できません。ファイル形式またはURLを確認してください。'); });
+$('volume').addEventListener('input', () => { audio.volume = video.volume = Number($('volume').value); ytPlayer?.setVolume?.(Math.round(audio.volume * 100)); });
+let lastPos = 0;
+function tick() {
+  const d = engine.duration(), c = engine.time(); $('currentTime').textContent = formatTime(c);
+  if (Number.isFinite(d) && d > 0) {
+    $('seek').value = String(Math.round(c / d * 1000)); $('duration').textContent = formatTime(d);
+    // ロック画面のシークバー
+    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && Date.now() - lastPos > 1000) { lastPos = Date.now(); try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(c, d), playbackRate: 1 }); } catch {} }
+  }
+}
+for (const m of [audio, video]) {   // 使っている方の要素のイベントだけ扱う
+  const on = (ev, fn) => m.addEventListener(ev, e => { if (e.target === cur) fn(e); });
+  on('timeupdate', tick);
+  on('loadedmetadata', () => { $('duration').textContent = formatTime(cur.duration); });
+  on('durationchange', () => { $('duration').textContent = formatTime(cur.duration); });
+  on('play', updatePlay); on('pause', updatePlay);
+  on('ended', () => step(1, true));
+  on('error', () => { if (currentId && !engine.yt()) notify('再生できません。ファイル形式またはURLを確認してください。'); });
+}
 if ('mediaSession' in navigator) {
   const actions = { play: () => engine.play(), pause: () => engine.pause(), previoustrack: () => step(-1), nexttrack: () => step(1),
     seekto: d => { if (Number.isFinite(d.seekTime)) engine.seek(d.seekTime); },
     seekbackward: d => { engine.seek(Math.max(0, engine.time() - (d.seekOffset || 10))); },
-    seekforward: d => { engine.seek(Math.min(engine.duration() || Infinity, engine.time() + (d.seekOffset || 10))); } };
+    seekforward: d => { engine.seek(Math.min(engine.duration() || Infinity, engine.time() + (d.seekOffset || 10))); },
+    stop: () => engine.pause() };
   for (const [name, handler] of Object.entries(actions)) { try { navigator.mediaSession.setActionHandler(name, handler); } catch {} }
 }
 
@@ -452,15 +503,15 @@ const dbDelete = id => dbTx('readwrite', st => st.delete(id)).catch(() => {});
 const dbClear = () => dbTx('readwrite', st => st.clear()).catch(() => {});
 const dbKeys = () => dbTx('readonly', st => st.getAllKeys());
 async function dbUpdate(id, patch) { try { await dbTx('readwrite', st => { const g = st.get(id); g.onsuccess = () => { if (g.result) st.put(Object.assign(g.result, patch)); }; return null; }); } catch {} }
-function guessType(r) { return r.type || (/\.mp3$/i.test(r.name || '') ? 'audio/mpeg' : /\.(mp4|m4v)$/i.test(r.name || '') ? 'video/mp4' : /\.m4a$/i.test(r.name || '') ? 'audio/mp4' : /\.wav$/i.test(r.name || '') ? 'audio/wav' : ''); }
+function guessType(r) { return r.type || (/\.mp3$/i.test(r.name || '') ? 'audio/mpeg' : /\.(mp4|m4v)$/i.test(r.name || '') ? 'video/mp4' : /\.mov$/i.test(r.name || '') ? 'video/quicktime' : /\.m4a$/i.test(r.name || '') ? 'audio/mp4' : /\.wav$/i.test(r.name || '') ? 'audio/wav' : ''); }
 async function persistNew(list) {
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
   let ok = 0, ng = 0, lastErr = '';
   for (const t of list) {
-    try { await dbPut({ id: t.id, title: t.title, type: t.file.type || '', name: t.file.name, data: new Blob([t.file], { type: t.file.type || guessType({ name: t.file.name }) }), thumb: null, artist: null }); ok++; }
+    try { await dbPut({ id: t.id, title: t.title, type: t.file.type || guessType({ name: t.file.name }), name: t.file.name, data: new Blob([t.file], { type: t.file.type || guessType({ name: t.file.name }) }), thumb: t.thumb || null, artist: t.artist || null }); ok++; }
     catch (e) { ng++; lastErr = e?.name || ''; }
   }
-  notify(ng ? `${ok} 曲を保存、${ng} 曲は保存できませんでした（${lastErr === 'QuotaExceededError' ? '容量不足' : lastErr || 'エラー'}）` : `${ok} 曲をアプリに保存しました`);
+  notify(ng ? `${ok} 件を保存、${ng} 件は保存できませんでした（${lastErr === 'QuotaExceededError' ? '容量不足' : lastErr || 'エラー'}）` : `${ok} 件をアプリに保存しました`);
   showDiag();
 }
 async function loadLocal() {
@@ -476,7 +527,7 @@ async function loadLocal() {
         await dbPut(r); migrated++; r = await dbGet(key); if (!r) continue;
       }
       if (tracks.some(t => t.id === r.id)) continue;
-      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(r.data), kind: 'local', thumb: r.thumb || null, artist: r.artist || null });
+      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(r.data), blob: r.data, name: r.name || '', kind: 'local', media: mediaOf(r.type || r.data.type, r.name), size: r.data.size || 0, thumb: r.thumb || null, artist: r.artist || null });
     } catch { failed++; }
     if (migrated && migrated % 3 === 0) { applySavedOrderAndFolders(); render(); }
   }
@@ -564,6 +615,124 @@ async function fetchYtInfo(t) {
   } catch {}
 }
 
+/* ---------- 音楽モード / 動画モード ---------- */
+let handedOff = false;   // 画面を離れたとき動画→音声に引き継いだか
+function updateModeUI() {
+  $('modeMusic').classList.toggle('active', mode === 'music'); $('modeMusic').setAttribute('aria-pressed', String(mode === 'music'));
+  $('modeVideo').classList.toggle('active', mode === 'video'); $('modeVideo').setAttribute('aria-pressed', String(mode === 'video'));
+}
+// 再生位置を保ったまま、音声要素と映像要素を入れ替える
+function swapTo(target, { keepPlaying = true } = {}) {
+  const t = curTrack(); if (!t || t.kind === 'youtube' || target === cur) return;
+  const old = cur, time = old.currentTime || 0, playing = keepPlaying && !old.paused;
+  cur = target; cur.volume = old.volume;
+  cur.src = t.url + (time > 0.5 ? `#t=${time.toFixed(2)}` : '');
+  cur.addEventListener('loadedmetadata', () => { if (Math.abs(cur.currentTime - time) > 1) { try { cur.currentTime = time; } catch {} } }, { once: true });
+  if (playing) cur.play().catch(() => {}); else cur.load();
+  clearEl(old); showArt(t); setNowLabels(t); updatePlay();
+}
+function setNowLabels(t) { $('sourceLabel').textContent = t.kind === 'youtube' ? 'YOUTUBE' : (t.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (t.media === 'video' ? (cur === video ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO'); }
+function setMode(m) {
+  if (m === mode) return; mode = m; try { localStorage.setItem(MODE_KEY, m); } catch {} updateModeUI();
+  const t = curTrack();
+  if (!t) { notify(m === 'video' ? '動画モード：動画を映像付きで再生します' : '音楽モード：音声だけを再生します（画面を消しても再生を続けやすい）'); return; }
+  if (t.kind === 'youtube') { notify('YouTubeは公式プレーヤーで再生します'); return; }
+  if (m === 'video' && t.media !== 'video') { notify('この曲は音声のみです。動画を選ぶと映像付きで再生します'); return; }
+  swapTo(wantVideo(t) ? video : audio);
+}
+function inPiP() { return video.webkitPresentationMode === 'picture-in-picture' || document.pictureInPictureElement === video; }
+async function togglePiP() {
+  try {
+    if (typeof video.webkitSetPresentationMode === 'function' && video.webkitSupportsPresentationMode?.('picture-in-picture')) video.webkitSetPresentationMode(inPiP() ? 'inline' : 'picture-in-picture');
+    else if (document.pictureInPictureEnabled) { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture(); }
+    else notify('この端末ではピクチャ・イン・ピクチャを使えません');
+  } catch { notify('ピクチャ・イン・ピクチャを開始できませんでした（再生中に押してください）'); }
+}
+// iPhoneは画面を離れると映像の再生を止めるため、可能なら音声だけで再生を続ける
+document.addEventListener('visibilitychange', () => {
+  const t = curTrack(); if (!t || t.kind === 'youtube') return;
+  if (document.visibilityState === 'hidden') {
+    if (cur === video && !video.paused && !inPiP()) { handedOff = true; swapTo(audio); }
+  } else if (handedOff) {
+    handedOff = false; if (wantVideo(t)) swapTo(video);
+  }
+});
+window.addEventListener('online', () => { render(); showDiag(); });
+window.addEventListener('offline', () => { notify('オフラインです。保存済みの曲・動画のみ再生できます'); render(); showDiag(); });
+
+/* ---------- 保存：「ファイル」アプリ・空き容量・URLからのダウンロード ---------- */
+// 共有シート（「"ファイル"に保存」）を開く。iPhoneではタップ操作の中で呼ぶ必要がある
+function shareOrDownload(blob, filename) {
+  const file = new File([blob], filename, { type: blob.type || 'application/octet-stream' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    return navigator.share({ files: [file], title: filename }).then(() => true).catch(e => {
+      if (e && e.name === 'AbortError') return false;
+      downloadBlob(file, filename); return true;
+    });
+  }
+  downloadBlob(file, filename); return Promise.resolve(true);
+}
+function downloadBlob(blob, filename) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; document.body.append(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000);
+  notify('ダウンロードしました（「ファイル」アプリの「ダウンロード」に保存されます）');
+}
+function exportTrack(t) {
+  if (!t.blob) { notify('この曲は保存データがありません'); return; }
+  shareOrDownload(t.blob, `${safeFileName(t.title)}.${extOf(t)}`);
+}
+async function checkSpace(bytes) {
+  try {
+    const e = await navigator.storage?.estimate?.(); if (!e || !e.quota) return true;
+    const free = e.quota - e.usage;
+    if (bytes > free * 0.9) return confirm(`空き容量が足りない可能性があります。\n必要：約${fmtSize(bytes)}／アプリが使える残り：約${fmtSize(free)}\n\n保存を続けますか？（いらない曲・動画を削除すると空きが増えます）`);
+  } catch {}
+  return true;
+}
+// 直接ダウンロードが許可されたURL（CORS対応）だけを保存する。許可されていない場合は保存しない
+async function saveRemoteTrack(t) {
+  if (t.kind !== 'remote') return;
+  if (/(^|\.)youtube\.com|youtu\.be/i.test(t.url)) { notify('YouTubeは規約により保存できません'); return; }
+  if (!navigator.onLine) { notify('オフラインのため保存できません'); return; }
+  notify('ダウンロード中…');
+  let res;
+  try { res = await fetch(t.url, { mode: 'cors', credentials: 'omit' }); }
+  catch { notify('配布元がアプリからの直接ダウンロードを許可していないため保存できません。URLのまま（オンライン時のみ）再生できます'); return; }
+  if (!res.ok) { notify(`ダウンロードできませんでした（エラー ${res.status}）`); return; }
+  const type = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  const total = Number(res.headers.get('content-length')) || 0;
+  const pathName = (() => { try { return decodeURIComponent(new URL(res.url || t.url).pathname.split('/').pop() || ''); } catch { return ''; } })();
+  const cd = res.headers.get('content-disposition') || ''; const cdName = (cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i) || [])[1];
+  const name = cdName ? decodeURIComponent(cdName) : pathName;
+  const isMedia = /^(audio|video)\//.test(type) || /\.(mp3|wav|m4a|aac|mp4|m4v|mov)$/i.test(name);
+  if (!isMedia) { notify('音声・動画ファイルではないため保存できませんでした（共有ページのURLではなく、ファイル本体のURLが必要です）'); return; }
+  if (total && !(await checkSpace(total))) return;
+  let blob;
+  try {
+    if (res.body && res.body.getReader) {
+      const reader = res.body.getReader(); const chunks = []; let got = 0, lastShown = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; chunks.push(value); got += value.length;
+        if (total && got / total - lastShown >= 0.1) { lastShown = got / total; notify(`ダウンロード中… ${Math.round(lastShown * 100)}%`); } }
+      blob = new Blob(chunks, { type: type || guessType({ name }) });
+    } else blob = await res.blob();
+  } catch { notify('ダウンロードが途中で止まりました。通信状態を確認してください'); return; }
+  const fileName = name && /\.[a-z0-9]{2,4}$/i.test(name) ? name : `${safeFileName(t.title)}.${mediaOf(type, name) === 'video' ? 'mp4' : 'mp3'}`;
+  const file = new File([blob], fileName, { type: blob.type });
+  // URL登録の曲を、同じ位置・同じフォルダのまま「保存済み」に置き換える
+  Object.assign(t, { kind: 'local', url: URL.createObjectURL(blob), file, blob, name: fileName, media: mediaOf(blob.type, fileName), size: blob.size });
+  saveState(); render();
+  await persistNew([t]); metaQueue.push(t); runMetaQueue(); showDiag();
+}
+// 取り出した音声などを、新しい曲としてライブラリに追加する
+async function addBlobToLibrary(blob, fileName, { title, folder = null, thumb = null, artist = null, after = null } = {}) {
+  if (!(await checkSpace(blob.size))) return null;
+  const file = new File([blob], fileName, { type: blob.type });
+  const t = { id: uid(), title: title || fileName.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(blob), kind: 'local', file, blob, name: fileName, media: mediaOf(blob.type, fileName), size: blob.size, folder, thumb, artist };
+  const i = after ? tracks.findIndex(x => x.id === after) : -1;
+  if (i >= 0) tracks.splice(i + 1, 0, t); else tracks.push(t);
+  saveState(); render(); await persistNew([t]); delete t.file; showDiag(); return t;
+}
+
 /* ---------- 起動 ---------- */
 /* ---------- 保存状況の診断 ---------- */
 async function showDiag() {
@@ -573,8 +742,12 @@ async function showDiag() {
   lines.push(['開き方', standalone ? 'ホーム画面のアプリ' : 'ブラウザ（Safariまたは他アプリ内のブラウザ）']);
   let ls = 'OK'; try { localStorage.setItem('__t', '1'); localStorage.removeItem('__t'); } catch { ls = '使用不可（プライベートブラウズ・Cookieブロックの可能性）'; }
   lines.push(['設定の保存', ls]);
-  let n = '—'; try { const recs = await dbTx('readonly', st => st.count()); n = `${recs} 曲`; } catch (e) { n = '使用不可（' + (e?.name || 'エラー') + '）'; }
-  lines.push(['アプリ内に保存した曲', n]);
+  let n = '—'; try { const recs = await dbTx('readonly', st => st.count()); n = `${recs} 件`; } catch (e) { n = '使用不可（' + (e?.name || 'エラー') + '）'; }
+  lines.push(['アプリ内に保存した曲・動画', n]);
+  const loc = tracks.filter(t => t.kind === 'local'), au = loc.filter(t => t.media === 'audio'), vi = loc.filter(t => t.media === 'video');
+  const sum = a => fmtSize(a.reduce((x, t) => x + (t.size || 0), 0)) || '0KB';
+  lines.push(['内訳', `🎵 音楽 ${au.length}件（${sum(au)}）／🎬 動画 ${vi.length}件（${sum(vi)}）`]);
+  lines.push(['オンライン状態', navigator.onLine ? '接続中' : 'オフライン（保存済みの曲・動画のみ再生できます）']);
   try { if (navigator.storage?.estimate) { const est = await navigator.storage.estimate(); lines.push(['使用容量', `${(est.usage / 1048576).toFixed(1)} MB / 上限 約 ${(est.quota / 1073741824).toFixed(1)} GB`]); } } catch {}
   try { if (navigator.storage?.persisted) lines.push(['削除からの保護', (await navigator.storage.persisted()) ? '有効' : '無効（空き容量が少ないとiOSが消すことがあります）']); } catch {}
   box.replaceChildren(...lines.map(([k, v]) => { const r = el('div', 'diag-row'); r.append(el('span', '', k), el('strong', '', v)); return r; }));
@@ -582,6 +755,7 @@ async function showDiag() {
 }
 
 async function init() {
+  updateModeUI();
   loadRemote(); applySavedOrderAndFolders(); render(); updatePlay();
   await loadLocal(); applySavedOrderAndFolders(); render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
