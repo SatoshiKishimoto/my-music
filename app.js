@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -31,6 +31,14 @@ function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.
 function mediaOf(type, name) { return /^video\//.test(type || '') || /\.(mp4|m4v|mov)(\?|#|$)/i.test(name || '') ? 'video' : 'audio'; }
 function fmtSize(n) { if (!n) return ''; return n >= 1073741824 ? (n / 1073741824).toFixed(1) + 'GB' : n >= 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB'; }
 function extOf(t) { const m = (t.name || '').match(/\.([a-z0-9]{2,4})$/i); if (m) return m[1].toLowerCase(); const ty = t.blob?.type || ''; return { 'audio/mpeg': 'mp3', 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'video/mp4': 'mp4', 'video/quicktime': 'mov' }[ty] || (t.media === 'video' ? 'mp4' : 'm4a'); }
+// ファイル形式（拡張子）を表示用に返す
+function formatOf(t) {
+  if (!t) return '';
+  if (t.kind === 'youtube') return 'YouTube';
+  if (t.kind === 'local') return extOf(t).toUpperCase();
+  const m = (() => { try { return decodeURIComponent(new URL(t.url).pathname); } catch { return ''; } })().match(/\.([a-z0-9]{2,4})$/i);
+  return m ? m[1].toUpperCase() : '形式不明';
+}
 function safeFileName(s) { return String(s || 'my-music').replace(/[\\/:*?"<>|\n\r]+/g, ' ').trim().slice(0, 80) || 'my-music'; }
 function readJSON(key, fallback) { try { const v = JSON.parse(localStorage.getItem(key) || 'null'); return v ?? fallback; } catch { return fallback; } }
 
@@ -65,7 +73,7 @@ function inView(t, v) { return v === VIEW_ALL ? true : v === VIEW_NONE ? !t.fold
 function matchType(t, f) { return f === 'all' || t.media === f; }
 function setQueue() { playView = view; playType = typeFilter; }
 function queueTracks() { return tracks.filter(t => inView(t, playView) && matchType(t, playType)); }
-function visibleTracks() { const q = query.trim().toLowerCase(); return tracks.filter(t => inView(t, view) && matchType(t, typeFilter) && (!q || t.title.toLowerCase().includes(q) || (t.folder || '').toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q))); }
+function visibleTracks() { const q = query.trim().toLowerCase(); return tracks.filter(t => inView(t, view) && matchType(t, typeFilter) && (!q || t.title.toLowerCase().includes(q) || (t.folder || '').toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q) || formatOf(t).toLowerCase() === q.replace(/^\./, ''))); }
 
 /* ---------- 描画 ---------- */
 function render() { renderFolders(); renderTracks(); }
@@ -100,7 +108,11 @@ function renderTracks() {
     if (track.thumb) { icon.classList.add('has-thumb'); icon.style.backgroundImage = `url("${track.thumb}")`; if (playingNow) { icon.classList.add('playing'); icon.textContent = '♫'; } }
     else icon.textContent = playingNow ? '♫' : '♪';
     const info = el('span', 'track-info');
-    info.append(el('span', 'track-name', track.title), el('span', 'track-type', [track.media === 'video' ? '🎬 動画' : '🎵 音楽', track.folder && view === VIEW_ALL ? '📁 ' + track.folder : '', track.kind === 'local' ? '保存済み' : track.kind === 'youtube' ? '▶ YouTube' : 'Web URL', track.kind === 'local' ? fmtSize(track.size) : ''].filter(Boolean).join(' · ')));
+    const meta = el('span', 'track-type');
+    const fmt = formatOf(track);
+    if (track.kind !== 'youtube') { const badge = el('span', 'fmt-badge ' + (track.media === 'video' ? 'fmt-video' : 'fmt-audio'), fmt); meta.append(badge); }
+    meta.append(document.createTextNode([track.media === 'video' ? '🎬 動画' : '🎵 音楽', track.folder && view === VIEW_ALL ? '📁 ' + track.folder : '', track.kind === 'local' ? '保存済み' : track.kind === 'youtube' ? '▶ YouTube' : 'Web URL', track.kind === 'local' ? fmtSize(track.size) : ''].filter(Boolean).join(' · ')));
+    info.append(el('span', 'track-name', track.title), meta);
     btn.append(icon, info);
     const moves = el('span', 'moves');
     const up = el('button', 'move', '▲'); up.type = 'button'; up.disabled = index === 0; up.setAttribute('aria-label', `${track.title}を上へ`); up.addEventListener('click', () => moveTrack(track.id, -1));
@@ -114,7 +126,7 @@ function renderTracks() {
 function setNow(track) {
   $('trackTitle').textContent = track?.title || '曲を選択してください';
   $('trackSubtitle').textContent = track ? (track.folder || track.artist || (track.kind === 'local' ? 'アプリに保存した' + (track.media === 'video' ? '動画' : '曲') : track.kind === 'youtube' ? 'YouTube' : 'Webサーバーから再生')) : 'MP3 / WAV / M4A / MP4 / MOV';
-  $('sourceLabel').textContent = track ? (track.kind === 'youtube' ? 'YOUTUBE' : (track.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (track.media === 'video' ? (cur === video ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO')) : 'READY TO PLAY';
+  $('sourceLabel').textContent = track ? sourceText(track) : 'READY TO PLAY';
   $('seek').value = '0'; $('currentTime').textContent = '0:00'; $('duration').textContent = '0:00';
   showArt(track); updateMediaMeta(track);
 }
@@ -272,6 +284,14 @@ function openTrackMenu(trackId) {
   const guess = guessArtist(t);
   if (guess && !folders.includes(guess)) item(`＋ 「${guess}」フォルダを作って移動`, () => { folders.push(guess); setFolder(t.id, guess); });
   item('＋ 新しいフォルダを作って移動', () => { const f = askFolderName(guess || ''); if (f) setFolder(t.id, f); });
+  body.append(el('div', 'sheet-label', 'ファイル情報'));
+  const info = el('div', 'file-info');
+  const rows = [['形式', t.kind === 'youtube' ? 'YouTube（公式プレーヤーで再生）' : `${formatOf(t)}（${t.media === 'video' ? '動画' : '音声'}）`]];
+  if (t.kind === 'local') { rows.push(['サイズ', fmtSize(t.size) || '—']); if (t.name) rows.push(['元のファイル名', t.name]); if (t.blob?.type) rows.push(['種類（MIME）', t.blob.type]); }
+  else rows.push(['保存', t.kind === 'youtube' ? '保存できません（オンライン再生のみ）' : '未保存（URLから再生）']);
+  if (t.id === currentId && Number.isFinite(engine.duration()) && engine.duration() > 0) rows.push(['長さ', formatTime(engine.duration())]);
+  for (const [k, v] of rows) { const r = el('div', 'file-info-row'); r.append(el('span', '', k), el('strong', '', v)); info.append(r); }
+  body.append(info);
   body.append(el('div', 'sheet-label', '保存・変換'));
   if (t.kind === 'local') {
     item('📁 「ファイル」アプリに保存', () => exportTrack(t));
@@ -631,7 +651,8 @@ function swapTo(target, { keepPlaying = true } = {}) {
   if (playing) cur.play().catch(() => {}); else cur.load();
   clearEl(old); showArt(t); setNowLabels(t); updatePlay();
 }
-function setNowLabels(t) { $('sourceLabel').textContent = t.kind === 'youtube' ? 'YOUTUBE' : (t.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (t.media === 'video' ? (cur === video ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO'); }
+function sourceText(t) { return t.kind === 'youtube' ? 'YOUTUBE' : `${formatOf(t)} · ` + (t.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (t.media === 'video' ? (cur === video ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO'); }
+function setNowLabels(t) { $('sourceLabel').textContent = sourceText(t); }
 function setMode(m) {
   if (m === mode) return; mode = m; try { localStorage.setItem(MODE_KEY, m); } catch {} updateModeUI();
   const t = curTrack();

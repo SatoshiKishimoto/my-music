@@ -74,3 +74,12 @@
 .result-box{white-space:pre-line;background:#0b1527;border:1px solid #2b3b53;border-radius:12px;padding:12px;font-size:13px;line-height:1.7;margin:6px 0 4px;word-break:break-all}
 .sheet-item:disabled{opacity:.6}
 .pip-note{margin:10px 6px 0;text-align:center;font-size:11px;line-height:1.6;color:var(--muted)}
+/* ---- ファイル形式の表示 ---- */
+.fmt-badge{display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.5px;padding:1px 5px;border-radius:4px;margin-right:6px;vertical-align:1px}
+.fmt-audio{background:#2a3f5f;color:#cfe0ff}
+.fmt-video{background:#5a3f1c;color:#ffd99a}
+.file-info{background:#0b1527;border:1px solid #2b3b53;border-radius:12px;padding:4px 12px;margin:4px 0}
+.file-info-row{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid #1e2c42;font-size:13px}
+.file-info-row:last-child{border-bottom:0}
+.file-info-row span{color:var(--muted);flex:none}
+.file-info-row strong{font-weight:600;text-align:right;word-break:break-all}
