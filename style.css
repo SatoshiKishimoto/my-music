@@ -73,3 +73,4 @@
 .progress-fill{height:100%;width:2%;background:var(--gold);transition:width .2s}
 .result-box{white-space:pre-line;background:#0b1527;border:1px solid #2b3b53;border-radius:12px;padding:12px;font-size:13px;line-height:1.7;margin:6px 0 4px;word-break:break-all}
 .sheet-item:disabled{opacity:.6}
+.pip-note{margin:10px 6px 0;text-align:center;font-size:11px;line-height:1.6;color:var(--muted)}

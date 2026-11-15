@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -640,8 +640,20 @@ function setMode(m) {
   if (m === 'video' && t.media !== 'video') { notify('この曲は音声のみです。動画を選ぶと映像付きで再生します'); return; }
   swapTo(wantVideo(t) ? video : audio);
 }
+// iOSではホーム画面に追加したアプリ（スタンドアロン）だとピクチャ・イン・ピクチャが使えない（WebKitの制限）
+function isStandalone() { return window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches; }
+function pipAvailable() {
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent) && isStandalone()) return false;
+  return (typeof video.webkitSupportsPresentationMode === 'function' && video.webkitSupportsPresentationMode('picture-in-picture')) || !!document.pictureInPictureEnabled;
+}
+function updatePipUI() {
+  const ok = pipAvailable();
+  $('pipBtn').hidden = !ok;
+  $('pipNote').hidden = ok;
+}
 function inPiP() { return video.webkitPresentationMode === 'picture-in-picture' || document.pictureInPictureElement === video; }
 async function togglePiP() {
+  if (!pipAvailable()) { notify('ホーム画面のアプリでは、iOSの制限でピクチャ・イン・ピクチャを使えません'); updatePipUI(); return; }
   try {
     if (typeof video.webkitSetPresentationMode === 'function' && video.webkitSupportsPresentationMode?.('picture-in-picture')) video.webkitSetPresentationMode(inPiP() ? 'inline' : 'picture-in-picture');
     else if (document.pictureInPictureEnabled) { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await video.requestPictureInPicture(); }
@@ -755,7 +767,7 @@ async function showDiag() {
 }
 
 async function init() {
-  updateModeUI();
+  updateModeUI(); updatePipUI();
   loadRemote(); applySavedOrderAndFolders(); render(); updatePlay();
   await loadLocal(); applySavedOrderAndFolders(); render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
