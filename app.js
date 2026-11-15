@@ -1,12 +1,13 @@
 'use strict';
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
 const $ = id => document.getElementById(id);
-const audio = $('audio');   // 音楽モード（バックグラウンド再生向き）
-const video = $('video');   // 動画モード（映像を表示）
-let cur = audio;            // いま使っている再生要素
+const audio = $('audio');   // 音はいつもこの要素から出す（画面を離れても再生を続けられる）
+const video = $('video');   // 動画モードの映像表示用（消音して音声に同期させる）
+let cur = audio;            // 再生を管理する要素（常に audio）
+let videoOn = false;        // 映像を表示しているか
 
 const STORE = 'my-music-remote-v1';        // Web曲（URL）
 const ORDER_KEY = 'my-music-order-v1';     // 曲順
@@ -135,7 +136,7 @@ function updateMediaMeta(track) {
   navigator.mediaSession.metadata = track ? new MediaMetadata({ title: track.title, artist: track.artist || track.folder || 'My Music', album: track.folder || 'My Music', artwork: track.thumb ? [{ src: track.thumb, sizes: track.kind === 'youtube' ? '480x360' : '320x320', type: 'image/jpeg' }] : [] }) : null;
 }
 function showArt(track) {
-  const yt = track?.kind === 'youtube', vid = !yt && !!track && cur === video;
+  const yt = track?.kind === 'youtube', vid = !yt && !!track && videoOn;
   $('art').hidden = yt || vid; $('ytWrap').hidden = !yt; $('videoWrap').hidden = !vid;
   const art = $('art'); art.replaceChildren();
   if (track?.thumb) { const img = el('img'); img.src = track.thumb; img.alt = ''; art.append(img); art.classList.add('has-thumb'); }
@@ -149,15 +150,16 @@ async function playTrack(trackId) {
   const track = tracks.find(t => t.id === trackId); if (!track) return;
   if (!navigator.onLine && track.kind !== 'local') { notify('オフラインのため再生できません（端末に保存した曲・動画は再生できます）'); return; }
   if (currentId !== trackId) {
-    currentId = trackId; handedOff = false;
-    if (track.kind === 'youtube') { clearEl(audio); clearEl(video); cur = audio; setNow(track); ytLoad(track); render(); return; }
-    ytStop(); const target = wantVideo(track) ? video : audio; clearEl(target === audio ? video : audio);
-    cur = target; cur.src = track.url; cur.load(); setNow(track);
+    currentId = trackId;
+    if (track.kind === 'youtube') { clearEl(audio); detachVideo(); cur = audio; setNow(track); ytLoad(track); render(); return; }
+    ytStop(); detachVideo(); cur = audio; audio.src = track.url; audio.load();
+    if (wantVideo(track)) attachVideo(track);
+    setNow(track);
   }
   try { await engine.play(); } catch { notify('再生できません。URL・形式・通信状態を確認してください。'); }
   render();
 }
-function stop() { ytStop(); clearEl(audio); clearEl(video); cur = audio; currentId = null; setNow(null); updatePlay(); }
+function stop() { ytStop(); clearEl(audio); detachVideo(); cur = audio; currentId = null; setNow(null); updatePlay(); }
 function curTrack() { return tracks.find(t => t.id === currentId) || null; }
 // 音声ファイルとYouTubeの両方を同じ操作で扱うための窓口
 const engine = {
@@ -635,31 +637,57 @@ async function fetchYtInfo(t) {
   } catch {}
 }
 
-/* ---------- 音楽モード / 動画モード ---------- */
-let handedOff = false;   // 画面を離れたとき動画→音声に引き継いだか
+/* ---------- 音楽モード / 動画モード ----------
+   iPhoneは、ほかのアプリに切り替えると映像（video要素）の再生を止め、
+   画面の外から新しく再生を始めることも許さない。
+   そこで音はいつも audio 要素から出し、動画モードでは video 要素を消音して
+   映像だけを音声に合わせて表示する。切り替えても止まるのは映像だけで、音は続く。 */
 function updateModeUI() {
   $('modeMusic').classList.toggle('active', mode === 'music'); $('modeMusic').setAttribute('aria-pressed', String(mode === 'music'));
   $('modeVideo').classList.toggle('active', mode === 'video'); $('modeVideo').setAttribute('aria-pressed', String(mode === 'video'));
 }
-// 再生位置を保ったまま、音声要素と映像要素を入れ替える
-function swapTo(target, { keepPlaying = true } = {}) {
-  const t = curTrack(); if (!t || t.kind === 'youtube' || target === cur) return;
-  const old = cur, time = old.currentTime || 0, playing = keepPlaying && !old.paused;
-  cur = target; cur.volume = old.volume;
-  cur.src = t.url + (time > 0.5 ? `#t=${time.toFixed(2)}` : '');
-  cur.addEventListener('loadedmetadata', () => { if (Math.abs(cur.currentTime - time) > 1) { try { cur.currentTime = time; } catch {} } }, { once: true });
-  if (playing) cur.play().catch(() => {}); else cur.load();
-  clearEl(old); showArt(t); setNowLabels(t); updatePlay();
+let ownSeek = false;   // こちらから映像の位置を動かしたときの印
+function attachVideo(t) {
+  videoOn = true; video.muted = true; video.defaultMuted = true; video.setAttribute('muted', '');
+  video.src = t.url; video.load();
+  video.addEventListener('loadedmetadata', () => syncVideo(true), { once: true });
 }
-function sourceText(t) { return t.kind === 'youtube' ? 'YOUTUBE' : `${formatOf(t)} · ` + (t.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (t.media === 'video' ? (cur === video ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO'); }
+function detachVideo() { videoOn = false; clearEl(video); }
+// 映像を音声の位置に合わせる
+function syncVideo(force = false) {
+  if (!videoOn || document.visibilityState === 'hidden' || !video.getAttribute('src')) return;
+  if (video.readyState >= 1) {
+    const diff = Math.abs(video.currentTime - audio.currentTime);
+    if (force ? diff > 0.08 : diff > 0.35) { ownSeek = true; try { video.currentTime = audio.currentTime; } catch {} }
+  }
+  if (!audio.paused && video.paused) video.play().catch(() => {});
+  if (audio.paused && !video.paused) video.pause();
+}
+audio.addEventListener('play', () => syncVideo(true));
+audio.addEventListener('playing', () => syncVideo(true));
+audio.addEventListener('pause', () => { if (videoOn) video.pause(); });
+audio.addEventListener('seeked', () => syncVideo(true));
+audio.addEventListener('timeupdate', () => syncVideo(false));
+audio.addEventListener('ended', () => { if (videoOn) video.pause(); });
+// 全画面の再生画面（iPhone標準の操作パネル）で操作したときは、音声側にも反映する
+const fullscreenNow = () => !!(video.webkitDisplayingFullscreen || document.fullscreenElement === video || document.webkitFullscreenElement === video);
+video.addEventListener('play', () => { if (fullscreenNow() && audio.paused) audio.play().catch(() => {}); });
+video.addEventListener('pause', () => { if (fullscreenNow() && document.visibilityState === 'visible' && !audio.paused && !video.ended) audio.pause(); });
+video.addEventListener('seeked', () => { if (ownSeek) { ownSeek = false; return; } if (fullscreenNow() && Math.abs(video.currentTime - audio.currentTime) > 0.5) audio.currentTime = video.currentTime; });
+video.addEventListener('volumechange', () => { if (!video.muted) video.muted = true; });   // 音が二重にならないよう映像側は常に消音
+video.addEventListener('webkitendfullscreen', () => syncVideo(true));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncVideo(true); });
+
+function sourceText(t) { return t.kind === 'youtube' ? 'YOUTUBE' : `${formatOf(t)} · ` + (t.kind === 'local' ? 'LOCAL ' : 'ONLINE ') + (t.media === 'video' ? (videoOn ? 'VIDEO' : 'VIDEO · AUDIO ONLY') : 'AUDIO'); }
 function setNowLabels(t) { $('sourceLabel').textContent = sourceText(t); }
 function setMode(m) {
   if (m === mode) return; mode = m; try { localStorage.setItem(MODE_KEY, m); } catch {} updateModeUI();
   const t = curTrack();
-  if (!t) { notify(m === 'video' ? '動画モード：動画を映像付きで再生します' : '音楽モード：音声だけを再生します（画面を消しても再生を続けやすい）'); return; }
+  if (!t) { notify(m === 'video' ? '動画モード：動画を映像付きで再生します' : '音楽モード：音声だけを再生します'); return; }
   if (t.kind === 'youtube') { notify('YouTubeは公式プレーヤーで再生します'); return; }
   if (m === 'video' && t.media !== 'video') { notify('この曲は音声のみです。動画を選ぶと映像付きで再生します'); return; }
-  swapTo(wantVideo(t) ? video : audio);
+  if (wantVideo(t)) attachVideo(t); else detachVideo();
+  showArt(t); setNowLabels(t);
 }
 // iOSではホーム画面に追加したアプリ（スタンドアロン）だとピクチャ・イン・ピクチャが使えない（WebKitの制限）
 function isStandalone() { return window.navigator.standalone === true || matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches; }
@@ -681,15 +709,6 @@ async function togglePiP() {
     else notify('この端末ではピクチャ・イン・ピクチャを使えません');
   } catch { notify('ピクチャ・イン・ピクチャを開始できませんでした（再生中に押してください）'); }
 }
-// iPhoneは画面を離れると映像の再生を止めるため、可能なら音声だけで再生を続ける
-document.addEventListener('visibilitychange', () => {
-  const t = curTrack(); if (!t || t.kind === 'youtube') return;
-  if (document.visibilityState === 'hidden') {
-    if (cur === video && !video.paused && !inPiP()) { handedOff = true; swapTo(audio); }
-  } else if (handedOff) {
-    handedOff = false; if (wantVideo(t)) swapTo(video);
-  }
-});
 window.addEventListener('online', () => { render(); showDiag(); });
 window.addEventListener('offline', () => { notify('オフラインです。保存済みの曲・動画のみ再生できます'); render(); showDiag(); });
 
