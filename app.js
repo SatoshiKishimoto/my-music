@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -823,6 +823,8 @@ if ('IntersectionObserver' in window) {
 $('miniPrev').addEventListener('click', () => $('prev').click());
 $('miniPlay').addEventListener('click', () => $('play').click());
 $('miniNext').addEventListener('click', () => $('next').click());
+$('miniBack').addEventListener('click', () => seekBy(-10));
+$('miniFwd').addEventListener('click', () => seekBy(10));
 $('miniInfo').addEventListener('click', () => $('playerCard').scrollIntoView({ behavior: 'smooth', block: 'start' }));
 
 /* ---------- 音量 ----------

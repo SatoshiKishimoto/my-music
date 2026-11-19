@@ -121,3 +121,14 @@ body.mini-on #toast{bottom:calc(96px + env(safe-area-inset-bottom))}
 .seek-btn{display:flex;align-items:center;gap:6px;border:1px solid #33445e;background:#132036;color:var(--text);border-radius:99px;padding:9px 16px;min-height:44px;font-size:13px;font-weight:700;cursor:pointer}
 .seek-btn svg{width:22px;height:22px;fill:currentColor}
 .seek-btn:active{transform:scale(.95);border-color:var(--gold);color:var(--gold)}
+/* ---- ミニプレーヤーの早送り・巻き戻し ---- */
+.mini{gap:2px;padding:8px 6px}
+.mini-info{gap:8px}
+.mini-art{width:40px;height:40px}
+.mini-btn{width:40px;height:46px}
+.mini-btn svg{width:26px;height:26px}
+.mini-seek{position:relative}
+.mini-seek svg{width:30px;height:30px;opacity:.9}
+.mini-seek b{position:absolute;left:0;right:0;top:50%;transform:translateY(-38%);font-size:8.5px;font-weight:800;text-align:center;pointer-events:none}
+.mini-play{width:46px;height:46px;margin:0 2px}
+@media (max-width:360px){.mini-art{display:none}}
