@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -77,7 +77,7 @@ function queueTracks() { return tracks.filter(t => inView(t, playView) && matchT
 function visibleTracks() { const q = query.trim().toLowerCase(); return tracks.filter(t => inView(t, view) && matchType(t, typeFilter) && (!q || t.title.toLowerCase().includes(q) || (t.folder || '').toLowerCase().includes(q) || (t.artist || '').toLowerCase().includes(q) || formatOf(t).toLowerCase() === q.replace(/^\./, ''))); }
 
 /* ---------- 描画 ---------- */
-function render() { renderFolders(); renderTracks(); }
+function render() { renderFolders(); renderTracks(); refreshMini(); }
 
 function renderFolders() {
   const bar = $('folderBar'); bar.replaceChildren();
@@ -129,7 +129,7 @@ function setNow(track) {
   $('trackSubtitle').textContent = track ? (track.folder || track.artist || (track.kind === 'local' ? 'アプリに保存した' + (track.media === 'video' ? '動画' : '曲') : track.kind === 'youtube' ? 'YouTube' : 'Webサーバーから再生')) : 'MP3 / WAV / M4A / MP4 / MOV';
   $('sourceLabel').textContent = track ? sourceText(track) : 'READY TO PLAY';
   $('seek').value = '0'; $('currentTime').textContent = '0:00'; $('duration').textContent = '0:00';
-  showArt(track); updateMediaMeta(track);
+  showArt(track); updateMediaMeta(track); updateMini(track);
 }
 function updateMediaMeta(track) {
   if (!('mediaSession' in navigator)) return;
@@ -185,6 +185,7 @@ function step(direction, ended = false) {
 }
 function updatePlay() {
   const p = engine.paused(); $('play').textContent = p ? '▶' : 'Ⅱ'; $('play').setAttribute('aria-label', p ? '再生' : '一時停止');
+  $('miniPlay').textContent = p ? '▶' : 'Ⅱ'; $('miniPlay').setAttribute('aria-label', p ? '再生' : '一時停止');
   render(); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = p ? 'paused' : 'playing';
 }
 
@@ -383,6 +384,7 @@ function tick() {
   const d = engine.duration(), c = engine.time(); $('currentTime').textContent = formatTime(c);
   if (Number.isFinite(d) && d > 0) {
     $('seek').value = String(Math.round(c / d * 1000)); $('duration').textContent = formatTime(d);
+    $('miniBar').style.width = (c / d * 100).toFixed(2) + '%';
     // ロック画面のシークバー
     if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && Date.now() - lastPos > 1000) { lastPos = Date.now(); try { navigator.mediaSession.setPositionState({ duration: d, position: Math.min(c, d), playbackRate: 1 }); } catch {} }
   }
@@ -795,6 +797,37 @@ async function addBlobToLibrary(blob, fileName, { title, folder = null, thumb = 
   saveState(); render(); await persistNew([t]); delete t.file; showDiag(); return t;
 }
 
+/* ---------- ミニプレーヤー（画面の下に固定） ----------
+   下の方の曲を選んだときも、上までスクロールせずに操作できるようにする */
+function updateMini(track) {
+  $('miniTitle').textContent = track?.title || '曲を選択してください';
+  $('miniSub').textContent = track ? [formatOf(track), track.folder || track.artist || ''].filter(Boolean).join(' · ') : 'タップしてプレーヤーを表示';
+  const art = $('miniArt');
+  if (track?.thumb) { art.style.backgroundImage = `url("${track.thumb}")`; art.textContent = ''; }
+  else { art.style.backgroundImage = ''; art.textContent = track?.media === 'video' ? '🎬' : '♪'; }
+  if (!track) $('miniBar').style.width = '0%';
+}
+let playerVisible = true;
+function refreshMini() {
+  const show = !playerVisible && (tracks.length > 0 || !!currentId);
+  $('mini').hidden = !show; document.body.classList.toggle('mini-on', show);
+}
+if ('IntersectionObserver' in window) {
+  // プレーヤーの操作ボタンが画面から外れたらミニプレーヤーを出す
+  new IntersectionObserver(es => { playerVisible = es[0].isIntersecting; refreshMini(); }, { threshold: 0.6 }).observe($('playerCard').querySelector('.controls'));
+}
+$('miniPrev').addEventListener('click', () => $('prev').click());
+$('miniPlay').addEventListener('click', () => $('play').click());
+$('miniNext').addEventListener('click', () => $('next').click());
+$('miniInfo').addEventListener('click', () => $('playerCard').scrollIntoView({ behavior: 'smooth', block: 'start' }));
+
+/* ---------- 音量 ----------
+   iPhoneのSafariは、Webアプリから音量を変えることを許可していない（常に最大のまま）。
+   音を加工して無理に変える方法は、画面を離れたときに再生が止まる原因になるため使わず、
+   iPhoneではスライダーを隠して本体の音量ボタンを案内する。 */
+function volumeControllable() { try { const a = document.createElement('audio'); a.volume = 0.5; return Math.abs(a.volume - 0.5) < 0.01; } catch { return false; } }
+function updateVolumeUI() { const ok = volumeControllable(); $('volumeRow').hidden = !ok; $('volumeNote').hidden = ok; }
+
 /* ---------- 起動 ---------- */
 /* ---------- 保存状況の診断 ---------- */
 async function showDiag() {
@@ -817,7 +850,7 @@ async function showDiag() {
 }
 
 async function init() {
-  updateModeUI(); updatePipUI();
+  updateModeUI(); updatePipUI(); updateVolumeUI(); updateMini(null);
   loadRemote(); applySavedOrderAndFolders(); render(); updatePlay();
   await loadLocal(); applySavedOrderAndFolders(); render();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
