@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -152,7 +152,7 @@ async function playTrack(trackId) {
   if (currentId !== trackId) {
     currentId = trackId;
     if (track.kind === 'youtube') { clearEl(audio); detachVideo(); cur = audio; setNow(track); ytLoad(track); render(); return; }
-    ytStop(); detachVideo(); cur = audio; audio.src = track.url; audio.load();
+    ytStop(); detachVideo(); cur = audio; audio.src = window.srcFor ? srcFor(track) : track.url; audio.load();
     if (wantVideo(track)) attachVideo(track);
     setNow(track);
   }
@@ -194,7 +194,7 @@ function removeTrack(trackId) {
   const idx = tracks.findIndex(t => t.id === trackId); if (idx < 0) return;
   const track = tracks[idx]; if (currentId === trackId) stop();
   tracks.splice(idx, 1);
-  if (track.kind === 'local') { URL.revokeObjectURL(track.url); dbDelete(track.id); }
+  if (track.kind === 'local') { URL.revokeObjectURL(track.url); if (track.normUrl) URL.revokeObjectURL(track.normUrl); dbDelete(track.id); }
   saveState(); render();
 }
 // 表示中の一覧の中で入れ替える（他のフォルダの曲の位置は変えない）
@@ -293,6 +293,7 @@ function openTrackMenu(trackId) {
   if (t.kind === 'local') { rows.push(['サイズ', fmtSize(t.size) || '—']); if (t.name) rows.push(['元のファイル名', t.name]); if (t.blob?.type) rows.push(['種類（MIME）', t.blob.type]); }
   else rows.push(['保存', t.kind === 'youtube' ? '保存できません（オンライン再生のみ）' : '未保存（URLから再生）']);
   if (t.id === currentId && Number.isFinite(engine.duration()) && engine.duration() > 0) rows.push(['長さ', formatTime(engine.duration())]);
+  if (t.kind === 'local' && t.gainDb != null) rows.push(['音量の補正', t.normBlob ? `${t.gainDb > 0 ? '+' : ''}${t.gainDb} dB（元の大きさ ${t.lufs != null ? t.lufs.toFixed(1) + ' LUFS' : '—'}）` : '補正なし（もともと標準的な大きさ）']);
   for (const [k, v] of rows) { const r = el('div', 'file-info-row'); r.append(el('span', '', k), el('strong', '', v)); info.append(r); }
   body.append(info);
   body.append(el('div', 'sheet-label', '保存・変換'));
@@ -323,7 +324,7 @@ $('fileInput').addEventListener('change', async e => {
     const t = { id: uid(), title: file.name.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(file), kind: 'local', file, blob: file, name: file.name, media: mediaOf(file.type, file.name), size: file.size, folder: target };
     tracks.push(t); added.push(t);
   }
-  saveState(); render(); persistNew(added).then(() => { metaQueue.push(...added); runMetaQueue(); });
+  saveState(); render(); persistNew(added).then(() => { metaQueue.push(...added); runMetaQueue(); window.normEnqueue?.(added); });
 });
 $('showUrl').addEventListener('click', () => { $('urlForm').hidden = !$('urlForm').hidden; if (!$('urlForm').hidden) $('urlInput').focus(); });
 $('urlForm').addEventListener('submit', e => {
@@ -560,7 +561,9 @@ async function loadLocal() {
         r.data = blob; r.type = r.type || blob.type;
         try { await dbPut(r); repaired++; } catch {}
       }
-      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(blob), blob, name: r.name || '', kind: 'local', media: mediaOf(r.type || blob.type, r.name), size: blob.size || 0, thumb: r.thumb || null, artist: r.artist || null });
+      const norm = r.norm instanceof Blob ? (r.norm.type === 'audio/mpeg' ? r.norm : r.norm.slice(0, r.norm.size, 'audio/mpeg')) : null;
+      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(blob), blob, name: r.name || '', kind: 'local', media: mediaOf(r.type || blob.type, r.name), size: blob.size || 0, thumb: r.thumb || null, artist: r.artist || null,
+        gainDb: typeof r.gainDb === 'number' ? r.gainDb : null, lufs: r.lufs ?? null, normBlob: norm, normUrl: norm ? URL.createObjectURL(norm) : null });
     } catch { failed++; }
     if (migrated && migrated % 3 === 0) { applySavedOrderAndFolders(); render(); }
   }
@@ -669,8 +672,9 @@ function detachVideo() { videoOn = false; clearEl(video); }
 function syncVideo(force = false) {
   if (!videoOn || document.visibilityState === 'hidden' || !video.getAttribute('src')) return;
   if (video.readyState >= 1) {
-    const diff = Math.abs(video.currentTime - audio.currentTime);
-    if (force ? diff > 0.08 : diff > 0.35) { ownSeek = true; try { video.currentTime = audio.currentTime; } catch {} }
+    const at = Math.max(0, audio.currentTime - (window.usingNorm && usingNorm(curTrack()) ? normDelay : 0));
+    const diff = Math.abs(video.currentTime - at);
+    if (force ? diff > 0.08 : diff > 0.35) { ownSeek = true; try { video.currentTime = at; } catch {} }
   }
   if (!audio.paused && video.paused) video.play().catch(() => {});
   if (audio.paused && !video.paused) video.pause();
@@ -785,7 +789,7 @@ async function saveRemoteTrack(t) {
   // URL登録の曲を、同じ位置・同じフォルダのまま「保存済み」に置き換える
   Object.assign(t, { kind: 'local', url: URL.createObjectURL(blob), file, blob, name: fileName, media: mediaOf(blob.type, fileName), size: blob.size });
   saveState(); render();
-  await persistNew([t]); metaQueue.push(t); runMetaQueue(); showDiag();
+  await persistNew([t]); metaQueue.push(t); runMetaQueue(); window.normEnqueue?.([t]); showDiag();
 }
 // 取り出した音声などを、新しい曲としてライブラリに追加する
 async function addBlobToLibrary(blob, fileName, { title, folder = null, thumb = null, artist = null, after = null } = {}) {
@@ -794,7 +798,7 @@ async function addBlobToLibrary(blob, fileName, { title, folder = null, thumb = 
   const t = { id: uid(), title: title || fileName.replace(/\.[^.]+$/, ''), url: URL.createObjectURL(blob), kind: 'local', file, blob, name: fileName, media: mediaOf(blob.type, fileName), size: blob.size, folder, thumb, artist };
   const i = after ? tracks.findIndex(x => x.id === after) : -1;
   if (i >= 0) tracks.splice(i + 1, 0, t); else tracks.push(t);
-  saveState(); render(); await persistNew([t]); delete t.file; showDiag(); return t;
+  saveState(); render(); await persistNew([t]); delete t.file; window.normEnqueue?.([t]); showDiag(); return t;
 }
 
 /* ---------- ミニプレーヤー（画面の下に固定） ----------
@@ -825,7 +829,8 @@ $('miniInfo').addEventListener('click', () => $('playerCard').scrollIntoView({ b
    iPhoneのSafariは、Webアプリから音量を変えることを許可していない（常に最大のまま）。
    音を加工して無理に変える方法は、画面を離れたときに再生が止まる原因になるため使わず、
    iPhoneではスライダーを隠して本体の音量ボタンを案内する。 */
-function volumeControllable() { try { const a = document.createElement('audio'); a.volume = 0.5; return Math.abs(a.volume - 0.5) < 0.01; } catch { return false; } }
+function isIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function volumeControllable() { if (isIOS()) return false; try { const a = document.createElement('audio'); a.volume = 0.5; return Math.abs(a.volume - 0.5) < 0.01; } catch { return false; } }
 function updateVolumeUI() { const ok = volumeControllable(); $('volumeRow').hidden = !ok; $('volumeNote').hidden = ok; }
 
 /* ---------- 起動 ---------- */
@@ -842,6 +847,8 @@ async function showDiag() {
   const loc = tracks.filter(t => t.kind === 'local'), au = loc.filter(t => t.media === 'audio'), vi = loc.filter(t => t.media === 'video');
   const sum = a => fmtSize(a.reduce((x, t) => x + (t.size || 0), 0)) || '0KB';
   lines.push(['内訳', `🎵 音楽 ${au.length}件（${sum(au)}）／🎬 動画 ${vi.length}件（${sum(vi)}）`]);
+  const nd = loc.filter(t => t.gainDb != null), nc = loc.filter(t => t.normBlob);
+  lines.push(['音量そろえ', window.normOn ? `オン：${nd.length}/${loc.length} 件準備済み（専用の音声 ${nc.length} 件・${fmtSize(nc.reduce((x, t) => x + (t.normBlob?.size || 0), 0)) || '0KB'}）` : 'オフ']);
   lines.push(['オンライン状態', navigator.onLine ? '接続中' : 'オフライン（保存済みの曲・動画のみ再生できます）']);
   try { if (navigator.storage?.estimate) { const est = await navigator.storage.estimate(); lines.push(['使用容量', `${(est.usage / 1048576).toFixed(1)} MB / 上限 約 ${(est.quota / 1073741824).toFixed(1)} GB`]); } } catch {}
   try { if (navigator.storage?.persisted) lines.push(['削除からの保護', (await navigator.storage.persisted()) ? '有効' : '無効（空き容量が少ないとiOSが消すことがあります）']); } catch {}
@@ -853,6 +860,7 @@ async function init() {
   updateModeUI(); updatePipUI(); updateVolumeUI(); updateMini(null);
   loadRemote(); applySavedOrderAndFolders(); render(); updatePlay();
   await loadLocal(); applySavedOrderAndFolders(); render();
+  window.normEnqueue?.(tracks); window.normStatus?.();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
   showDiag();
 }
