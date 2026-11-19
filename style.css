@@ -116,3 +116,8 @@ body.mini-on #toast{bottom:calc(96px + env(safe-area-inset-bottom))}
 .switch span::after{content:"";position:absolute;left:3px;top:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:transform .2s}
 .switch input:checked+span{background:var(--gold)}
 .switch input:checked+span::after{transform:translateX(20px)}
+/* ---- 早送り・巻き戻し ---- */
+.seek-row{display:flex;justify-content:center;gap:12px;margin:12px 0 0}
+.seek-btn{display:flex;align-items:center;gap:6px;border:1px solid #33445e;background:#132036;color:var(--text);border-radius:99px;padding:9px 16px;min-height:44px;font-size:13px;font-weight:700;cursor:pointer}
+.seek-btn svg{width:22px;height:22px;fill:currentColor}
+.seek-btn:active{transform:scale(.95);border-color:var(--gold);color:var(--gold)}

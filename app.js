@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -832,6 +832,22 @@ $('miniInfo').addEventListener('click', () => $('playerCard').scrollIntoView({ b
 function isIOS() { return /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
 function volumeControllable() { if (isIOS()) return false; try { const a = document.createElement('audio'); a.volume = 0.5; return Math.abs(a.volume - 0.5) < 0.01; } catch { return false; } }
 function updateVolumeUI() { const ok = volumeControllable(); $('volumeRow').hidden = !ok; $('volumeNote').hidden = ok; }
+
+/* ---------- 早送り・巻き戻し ---------- */
+function seekBy(sec) {
+  if (!currentId || !engine.hasSource()) { notify('先に曲を再生してください'); return; }
+  const d = engine.duration(); let t = engine.time() + sec;
+  t = Math.max(0, Number.isFinite(d) && d > 0 ? Math.min(d - 0.3, t) : t);
+  engine.seek(t); tick();
+}
+$('back10').addEventListener('click', () => seekBy(-10));
+$('fwd10').addEventListener('click', () => seekBy(10));
+// PCではキーボードの ← → でも 10秒戻る／進む（入力欄では無効）
+document.addEventListener('keydown', e => {
+  if (e.target.closest('input, textarea, select, [contenteditable]')) return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); seekBy(-10); }
+  else if (e.key === 'ArrowRight') { e.preventDefault(); seekBy(10); }
+});
 
 /* ---------- 起動 ---------- */
 /* ---------- 保存状況の診断 ---------- */
