@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -524,7 +524,11 @@ const dbGet = id => dbTx('readonly', st => st.get(id));
 const dbDelete = id => dbTx('readwrite', st => st.delete(id)).catch(() => {});
 const dbClear = () => dbTx('readwrite', st => st.clear()).catch(() => {});
 const dbKeys = () => dbTx('readonly', st => st.getAllKeys());
-async function dbUpdate(id, patch) { try { await dbTx('readwrite', st => { const g = st.get(id); g.onsuccess = () => { if (g.result) st.put(Object.assign(g.result, patch)); }; return null; }); } catch {} }
+// 曲名などを書き換えるときは、曲データに形式（MIMEタイプ）を付け直してから保存する
+// （iPhoneでは保存し直したデータの形式が消えることがあり、形式のないデータは再生できないため）
+async function dbUpdate(id, patch) { try { await dbTx('readwrite', st => { const g = st.get(id); g.onsuccess = () => { if (g.result) { const rec = Object.assign(g.result, patch); if (rec.data instanceof Blob) { rec.data = typedBlob(rec); rec.type = rec.type || rec.data.type; } st.put(rec); } }; return null; }); } catch {} }
+// 保存データに必ず形式を付ける（slice はデータをコピーせずに形式だけ付け替える）
+function typedBlob(r) { const type = r.type || r.data.type || guessType(r); return (!type || r.data.type === type) ? r.data : r.data.slice(0, r.data.size, type); }
 function guessType(r) { return r.type || (/\.mp3$/i.test(r.name || '') ? 'audio/mpeg' : /\.(mp4|m4v)$/i.test(r.name || '') ? 'video/mp4' : /\.mov$/i.test(r.name || '') ? 'video/quicktime' : /\.m4a$/i.test(r.name || '') ? 'audio/mp4' : /\.wav$/i.test(r.name || '') ? 'audio/wav' : ''); }
 async function persistNew(list) {
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch {}
@@ -540,7 +544,7 @@ async function loadLocal() {
   let keys;
   try { keys = await dbKeys() || []; }
   catch (e) { notify('保存した曲を読み込めませんでした（' + (e?.name || 'エラー') + '）。アプリを開き直してください'); return; }
-  let failed = 0, migrated = 0;
+  let failed = 0, migrated = 0, repaired = 0;
   for (const key of keys) {   // 1曲ずつ読む（まとめて読むとiPhoneのメモリが足りなくなる）
     try {
       let r = await dbGet(key); if (!r) continue;
@@ -549,12 +553,18 @@ async function loadLocal() {
         await dbPut(r); migrated++; r = await dbGet(key); if (!r) continue;
       }
       if (tracks.some(t => t.id === r.id)) continue;
-      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(r.data), blob: r.data, name: r.name || '', kind: 'local', media: mediaOf(r.type || r.data.type, r.name), size: r.data.size || 0, thumb: r.thumb || null, artist: r.artist || null });
+      const blob = typedBlob(r);
+      if (blob !== r.data) {   // 形式が消えていたデータを修復して保存し直す
+        r.data = blob; r.type = r.type || blob.type;
+        try { await dbPut(r); repaired++; } catch {}
+      }
+      tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(blob), blob, name: r.name || '', kind: 'local', media: mediaOf(r.type || blob.type, r.name), size: blob.size || 0, thumb: r.thumb || null, artist: r.artist || null });
     } catch { failed++; }
     if (migrated && migrated % 3 === 0) { applySavedOrderAndFolders(); render(); }
   }
   if (failed) notify(`${failed} 曲を読み込めませんでした。アプリを開き直すと読み込める場合があります`);
   else if (migrated) notify(`${migrated} 曲を新しい保存形式に変換しました`);
+  else if (repaired) notify(`${repaired} 件の再生できなくなっていた曲を修復しました`);
 }
 
 /* ---------- 共有リンクの解析 ---------- */
