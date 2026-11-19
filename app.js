@@ -1,5 +1,5 @@
 'use strict';
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 /* =========================================================
    My Music — iPhone向け 個人用 音楽・動画プレーヤー（PWA）
    ========================================================= */
@@ -293,7 +293,7 @@ function openTrackMenu(trackId) {
   if (t.kind === 'local') { rows.push(['サイズ', fmtSize(t.size) || '—']); if (t.name) rows.push(['元のファイル名', t.name]); if (t.blob?.type) rows.push(['種類（MIME）', t.blob.type]); }
   else rows.push(['保存', t.kind === 'youtube' ? '保存できません（オンライン再生のみ）' : '未保存（URLから再生）']);
   if (t.id === currentId && Number.isFinite(engine.duration()) && engine.duration() > 0) rows.push(['長さ', formatTime(engine.duration())]);
-  if (t.kind === 'local' && t.gainDb != null) rows.push(['音量の補正', t.normBlob ? `${t.gainDb > 0 ? '+' : ''}${t.gainDb} dB（元の大きさ ${t.lufs != null ? t.lufs.toFixed(1) + ' LUFS' : '—'}）` : '補正なし（もともと標準的な大きさ）']);
+  if (t.kind === 'local' && t.gainDb != null) rows.push(['音量の補正', t.normSkipped ? '対象外（ファイルが大きい・長い、または解析できない）' : t.normBlob ? `${t.gainDb > 0 ? '+' : ''}${t.gainDb} dB（元の大きさ ${t.lufs != null ? t.lufs.toFixed(1) + ' LUFS' : '—'}）` : '補正なし（もともと標準的な大きさ）']);
   for (const [k, v] of rows) { const r = el('div', 'file-info-row'); r.append(el('span', '', k), el('strong', '', v)); info.append(r); }
   body.append(info);
   body.append(el('div', 'sheet-label', '保存・変換'));
@@ -563,7 +563,7 @@ async function loadLocal() {
       }
       const norm = r.norm instanceof Blob ? (r.norm.type === 'audio/mpeg' ? r.norm : r.norm.slice(0, r.norm.size, 'audio/mpeg')) : null;
       tracks.push({ id: r.id, title: r.title, url: URL.createObjectURL(blob), blob, name: r.name || '', kind: 'local', media: mediaOf(r.type || blob.type, r.name), size: blob.size || 0, thumb: r.thumb || null, artist: r.artist || null,
-        gainDb: typeof r.gainDb === 'number' ? r.gainDb : null, lufs: r.lufs ?? null, normBlob: norm, normUrl: norm ? URL.createObjectURL(norm) : null });
+        gainDb: typeof r.gainDb === 'number' ? r.gainDb : null, lufs: r.lufs ?? null, normSkipped: !!r.normSkipped, normBlob: norm, normUrl: norm ? URL.createObjectURL(norm) : null });
     } catch { failed++; }
     if (migrated && migrated % 3 === 0) { applySavedOrderAndFolders(); render(); }
   }
@@ -878,7 +878,7 @@ async function init() {
   updateModeUI(); updatePipUI(); updateVolumeUI(); updateMini(null);
   loadRemote(); applySavedOrderAndFolders(); render(); updatePlay();
   await loadLocal(); applySavedOrderAndFolders(); render();
-  window.normEnqueue?.(tracks); window.normStatus?.();
+  window.normStatus?.();   // 音量そろえの準備は normalize.js が少し待ってから始める
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(r => r.update()).catch(() => {});
   showDiag();
 }
